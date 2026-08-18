@@ -8,7 +8,10 @@
 ## Units & conventions
 - Metres, kilograms, seconds, radians. Y is up. Right-handed.
 - Track lies roughly in the XZ plane; Y carries elevation.
-- Car forward is +Z in its local space. Steering angle > 0 turns left.
+- Car forward is +Z in its local space, which puts the car's RIGHT at local -X.
+  A positive `car.input.steer` therefore turns the car LEFT. Player input is
+  negated in main.js so that a player's "right" is the car's right; AI steer is
+  computed in the same body frame and must NOT be negated.
 - All angles radians. Speed internally m/s (HUD converts to km/h / mph).
 
 ## Global namespace rules

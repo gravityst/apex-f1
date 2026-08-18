@@ -548,18 +548,33 @@ function buildPitLane(scene, track, circuit) {
   const group = new THREE.Group();
   const pit = track.pit;
   const span = (pit.exitS - pit.entryS + track.length) % track.length;
-  const STEPS = Math.max(40, Math.round(span / 6));
-  const HALF = 4.0;                      // pit lane is 8 m wide
+  const HALF = 4.0;                       // pit lane is 8 m wide
+  const sideSign = pit.side === 'right' ? 1 : -1;   // CONSTANT: never derived
+                                                    // from the ramping offset
 
+  // Only build where the lane has actually separated from the racing surface.
+  // The entry/exit ramps pass close to the track, and anything drawn there
+  // (especially the wall) ends up standing on the circuit itself.
+  // Must exceed the lane's own half-width, or the ribbon's inner edge still
+  // overlaps the racing surface at the ends of the ramp.
+  const CLEAR = HALF + 1.0;
+  const isClear = (f) => {
+    const s = pit.entryS + span * f;
+    return Math.abs(pit.lane(s)) >= track.sample(s).width + CLEAR;
+  };
+  let f0 = -1, f1 = -1;
+  for (let i = 0; i <= 400; i++) { const f = i / 400; if (isClear(f)) { f0 = f; break; } }
+  for (let i = 400; i >= 0; i--) { const f = i / 400; if (isClear(f)) { f1 = f; break; } }
+  if (f0 < 0 || f1 <= f0) return { group, dispose() {} };   // no usable pit lane
+
+  const STEPS = Math.max(24, Math.round((span * (f1 - f0)) / 6));
   const posArr = [], uvArr = [], idxArr = [];
   const wallPos = [], wallIdx = [];
-  const sm = { pos: new THREE.Vector3(), lateral: new THREE.Vector3() };
   for (let i = 0; i <= STEPS; i++) {
-    const f = i / STEPS;
+    const f = f0 + (f1 - f0) * (i / STEPS);
     const s = pit.entryS + span * f;
     const smp = track.sample(s);
     const off = pit.lane(s);
-    if (Math.abs(off) < 0.01) { /* ramp ends taper to the track */ }
     const cx = smp.pos.x + smp.lateral.x * off;
     const cy = smp.pos.y + smp.lateral.y * off + 0.015;
     const cz = smp.pos.z + smp.lateral.z * off;
@@ -567,23 +582,27 @@ function buildPitLane(scene, track, circuit) {
       posArr.push(cx + smp.lateral.x * HALF * j, cy, cz + smp.lateral.z * HALF * j);
       uvArr.push((j + 1) * 0.5, (span * f) / 8);
     }
-    // wall on the track side of the lane
-    const sgn = Math.sign(off) || 1;
-    const wx = cx - smp.lateral.x * (HALF + 0.6) * sgn;
-    const wz = cz - smp.lateral.z * (HALF + 0.6) * sgn;
-    wallPos.push(wx, cy, wz, wx, cy + 1.05, wz);
+    // The separating wall sits just outside the TRACK edge — a fixed distance
+    // from the circuit, not an offset from the moving lane centre.
+    const wLat = sideSign * (smp.width + 2.0);
+    const wx = smp.pos.x + smp.lateral.x * wLat;
+    const wy = smp.pos.y + smp.lateral.y * wLat;
+    const wz = smp.pos.z + smp.lateral.z * wLat;
+    wallPos.push(wx, wy, wz, wx, wy + 1.05, wz);
   }
   for (let i = 0; i < STEPS; i++) {
-    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
-    idxArr.push(a, c, b, b, c, d);
-    const wa = i * 2, wb = wa + 1, wc = wa + 2, wd = wa + 3;
-    wallIdx.push(wa, wc, wb, wb, wc, wd, wb, wc, wa, wd, wc, wb);
+    const a2 = i * 2;
+    idxArr.push(a2, a2 + 2, a2 + 1, a2 + 1, a2 + 2, a2 + 3);
+    const w0 = i * 2;
+    wallIdx.push(w0, w0 + 2, w0 + 1, w0 + 1, w0 + 2, w0 + 3,
+                 w0 + 1, w0 + 2, w0, w0 + 3, w0 + 2, w0 + 1);
   }
+
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uvArr, 2));
   g.setIndex(idxArr); g.computeVertexNormals();
-  const laneMat = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.92, metalness: 0.0 });
+  const laneMat = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.92 });
   const lane = new THREE.Mesh(g, laneMat);
   lane.receiveShadow = true;
   group.add(lane);
@@ -596,33 +615,41 @@ function buildPitLane(scene, track, circuit) {
   wall.castShadow = true; wall.receiveShadow = true;
   group.add(wall);
 
-  // Garage boxes along the far side of the lane.
+  // Garages, set back on the far side of the lane.
   const boxGeo = new THREE.BoxGeometry(7.5, 4.2, 9);
+  const mats = [];
   for (let i = 0; i < 10; i++) {
-    const s = pit.entryS + span * (0.26 + i * 0.048);
+    const f = f0 + (f1 - f0) * (0.10 + i * 0.085);
+    if (f > f1) break;
+    const s = pit.entryS + span * f;
     const smp = track.sample(s);
     const off = pit.lane(s);
-    const sgn = Math.sign(off) || 1;
     const t = TEAMS[i % TEAMS.length];
-    const m = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({
+    const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(t.colors.primary).multiplyScalar(0.55), roughness: 0.85,
-    }));
+    });
+    mats.push(mat);
+    const m = new THREE.Mesh(boxGeo, mat);
+    const lat = off + sideSign * (HALF + 5.0);
     m.position.set(
-      smp.pos.x + smp.lateral.x * (off + sgn * (HALF + 5.0)),
+      smp.pos.x + smp.lateral.x * lat,
       smp.pos.y + 2.1,
-      smp.pos.z + smp.lateral.z * (off + sgn * (HALF + 5.0)),
+      smp.pos.z + smp.lateral.z * lat,
     );
     m.rotation.y = Math.atan2(smp.tangent.x, smp.tangent.z);
     m.castShadow = true; m.receiveShadow = true;
     group.add(m);
   }
+
   group.matrixAutoUpdate = false;
   group.updateMatrix();
   scene.add(group);
   return {
     group,
     dispose() {
-      g.dispose(); wg.dispose(); boxGeo.dispose(); laneMat.dispose(); wallMat.dispose();
+      g.dispose(); wg.dispose(); boxGeo.dispose();
+      laneMat.dispose(); wallMat.dispose();
+      for (const m of mats) m.dispose();
       scene.remove(group);
     },
   };
@@ -740,7 +767,13 @@ function stepSimulation(dtRaw, input) {
   const p = app.player;
   if (p && input) {
     const racing = race.state === 'racing';
-    p.input.steer = input.steer;
+    // Every input device (keyboard D, gamepad stick right, touch drag right)
+    // means "+ = right". The vehicle's body frame puts +X on the car's LEFT, so
+    // a positive steer command turns it left. Negate at this boundary so the
+    // player's right is the car's right.
+    // The AI is NOT negated: it derives its steer from a target expressed in
+    // the same body frame, so it is already self-consistent.
+    p.input.steer = -input.steer;
     p.throttle = racing ? input.throttle : 0;
     p.brake = racing ? input.brake : 1;
     p.input.throttle = p.throttle;
