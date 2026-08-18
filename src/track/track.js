@@ -403,8 +403,12 @@ export function createTrack(circuit) {
       let d = (s - pit.entryS + length) % length;
       if (d > span) return 0;
       const f = d / Math.max(1, span);
-      const ramp = Math.min(1, f / 0.14) * Math.min(1, (1 - f) / 0.14);
-      return sign * pit.laneOffset * THREE.MathUtils.clamp(ramp, 0, 1);
+      // A long, smooth ramp. A short one demands a 17 m lateral shift at
+      // approach speed, which is not physically drivable.
+      const RAMP = 0.30;
+      const raw = Math.min(1, f / RAMP) * Math.min(1, (1 - f) / RAMP);
+      const eased = raw * raw * (3 - 2 * raw);            // smoothstep
+      return sign * pit.laneOffset * THREE.MathUtils.clamp(eased, 0, 1);
     },
     contains(s) {
       const span = (pit.exitS - pit.entryS + length) % length;
@@ -643,6 +647,10 @@ export function createTrack(circuit) {
         if (inBand(si, sf.from, sf.to)) m = Math.max(m, sf.width + 1.5);
       }
       wall[i] = wid[i] + m;
+      // The barrier must never cut through the pit lane, or a car serving a
+      // legitimate stop slams into an invisible wall on the way in.
+      const po = pit.lane(si);
+      if (Math.abs(po) > 1) wall[i] = Math.max(wall[i], Math.abs(po) + 9);
     }
     // Smooth so the barrier line never steps.
     const tmp = new Float32Array(N);

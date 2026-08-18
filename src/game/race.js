@@ -53,6 +53,7 @@ export function createRace(opts) {
       position: 1, gapToLeader: 0, gapAhead: 0, interval: 0,
       retired: false, finished: false, finishTime: 0,
       pitStops: 0, inPitLane: false, pitBoxTimer: 0, pitState: 'none',
+      pitCommitted: false, pitLaneTime: 0,
       penalties: 0, penaltyTime: 0, warnings: 0,
       trackLimitStrikes: 0, offTrackSince: -1,
       drsEligible: false, drsArmed: false, drsZone: -1,
@@ -277,7 +278,9 @@ export function createRace(opts) {
       if (e.retired || e.finished) continue;
       const w = track.sample(c.lapDistance).width;
       const fullyOff = Math.abs(c.lateral) > w + 1.9;
-      if (fullyOff && !e.inPitLane && race.state === 'racing') {
+      // A car committed to the pits is legitimately off the racing surface —
+      // it must not collect track-limits strikes on the way in or out.
+      if (fullyOff && !e.inPitLane && !e.pitCommitted && race.state === 'racing') {
         if (e.offTrackSince < 0) e.offTrackSince = race.time;
         else if (race.time - e.offTrackSince > 0.35) {
           e.offTrackSince = race.time + 2.5;    // debounce
@@ -291,13 +294,16 @@ export function createRace(opts) {
         }
       } else if (!fullyOff) e.offTrackSince = -1;
 
-      // pit lane speeding
-      if (e.inPitLane && c.speed > track.pit.speedLimit + 0.6 && race.state === 'racing') {
-        if (!e._speedFlag) {
+      // Pit-lane speeding — only for a car that actually committed to the pits,
+      // and only after a short grace period so entering at speed isn't punished
+      // before the driver has had a chance to slow down.
+      if (e.inPitLane && race.state === 'racing') {
+        e.pitLaneTime = (e.pitLaneTime || 0) + dt;
+        if (e.pitLaneTime > 1.6 && c.speed > track.pit.speedLimit + 1.5 && !e._speedFlag) {
           e._speedFlag = true; e.penalties++; e.penaltyTime += 5;
           if (c.isPlayer) race.log('PIT LANE SPEEDING — 5s PENALTY', 'penalty');
         }
-      } else if (!e.inPitLane) e._speedFlag = false;
+      } else { e._speedFlag = false; e.pitLaneTime = 0; }
     }
   }
 
@@ -306,12 +312,25 @@ export function createRace(opts) {
     for (const c of cars) {
       const e = entry.get(c);
       const laneOff = track.pit.lane(c.lapDistance);
-      // Only count as "in the pit lane" where the lane has actually diverged
-      // from the track; near the entry/exit ramps the offset passes through
-      // zero and would otherwise flag cars that are simply on the racing line.
-      const inLane = track.pit.contains(c.lapDistance)
+      const inRegion = track.pit.contains(c.lapDistance);
+
+      // A car is in the pit lane only if it DELIBERATELY entered it. The lane
+      // sits out in the run-off, so a purely geometric test flags anyone who
+      // runs wide anywhere near the pit straight — which then hands them a
+      // pit-lane speeding penalty for a simple off-track moment.
+      const wantsPit = c.isPlayer ? !!c.input.pitRequest : !!c.wantsPit;
+      if (!inRegion && Math.abs(c.lateral) < track.sample(c.lapDistance).width + 3) {
+        e.pitCommitted = false;
+      }
+      else if (!e.pitCommitted && wantsPit) {
+        // Commit only near the entry, and only if actually heading for the lane.
+        const intoLane = ((c.lapDistance - track.pit.entryS + track.length) % track.length) < 120;
+        if (intoLane) e.pitCommitted = true;
+      }
+      const inLane = e.pitCommitted
+        && inRegion
         && Math.abs(laneOff) > 6
-        && Math.abs(c.lateral - laneOff) < 5.5;
+        && Math.abs(c.lateral - laneOff) < 4.5;
       e.inPitLane = inLane;
       if (!inLane) { if (e.pitState === 'done') e.pitState = 'none'; continue; }
 

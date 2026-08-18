@@ -220,6 +220,7 @@ export function createAIDriver(car, track, opts = {}) {
     ai.lineOffset += (ai.lineOffsetTarget - ai.lineOffset) * Math.min(1, dt * 2.4);
 
     // pit lane overrides the line entirely
+    c.wantsPit = !!ai.pitting;
     if (ai.pitting && track.pit.contains(s)) {
       ai.mode = 'pit';
       ai.lineOffset = track.pit.lane(s) - baseLine;

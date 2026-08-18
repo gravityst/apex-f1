@@ -276,6 +276,7 @@ function teardownRace() {
     for (let i = scene.children.length - 1; i >= 0; i--) scene.remove(scene.children[i]);
   }
   app.audio?.stopEngine?.();
+  if (app.pitLane) { try { app.pitLane.dispose(); } catch {} app.pitLane = null; }
   app.cars = []; app.ais = []; app.models = []; app.player = null;
   app.race = null; app.track = null; app.world = null;
 }
@@ -358,6 +359,10 @@ async function startRace(cfg) {
   }
   if (!app.world) buildFallbackWorld(scene);
   gradeWorldMaterials(app.world, circuit);
+  try {
+    if (app.pitLane) { app.pitLane.dispose(); app.pitLane = null; }
+    app.pitLane = buildPitLane(scene, app.track, circuit);
+  } catch (err) { console.warn('[apex] pit lane build failed', err); }
   step(0.62, 'Assembling cars');
   await nextFrame();
 
@@ -531,6 +536,96 @@ function gradeWorldMaterials(world, circuit) {
     }
     if (m.kerb && 'envMapIntensity' in m.kerb) m.kerb.envMapIntensity = 0.5;
   } catch (err) { console.warn('[apex] material grade skipped', err); }
+}
+
+/**
+ * Build a visible pit lane. The track geometry module only paints entry/exit
+ * guide lines, so the pit lane was an invisible strip of grass you could be
+ * penalised inside. This lays down a real surface, a separating wall, the
+ * speed-limit lines and the garage boxes.
+ */
+function buildPitLane(scene, track, circuit) {
+  const group = new THREE.Group();
+  const pit = track.pit;
+  const span = (pit.exitS - pit.entryS + track.length) % track.length;
+  const STEPS = Math.max(40, Math.round(span / 6));
+  const HALF = 4.0;                      // pit lane is 8 m wide
+
+  const posArr = [], uvArr = [], idxArr = [];
+  const wallPos = [], wallIdx = [];
+  const sm = { pos: new THREE.Vector3(), lateral: new THREE.Vector3() };
+  for (let i = 0; i <= STEPS; i++) {
+    const f = i / STEPS;
+    const s = pit.entryS + span * f;
+    const smp = track.sample(s);
+    const off = pit.lane(s);
+    if (Math.abs(off) < 0.01) { /* ramp ends taper to the track */ }
+    const cx = smp.pos.x + smp.lateral.x * off;
+    const cy = smp.pos.y + smp.lateral.y * off + 0.015;
+    const cz = smp.pos.z + smp.lateral.z * off;
+    for (let j = -1; j <= 1; j += 2) {
+      posArr.push(cx + smp.lateral.x * HALF * j, cy, cz + smp.lateral.z * HALF * j);
+      uvArr.push((j + 1) * 0.5, (span * f) / 8);
+    }
+    // wall on the track side of the lane
+    const sgn = Math.sign(off) || 1;
+    const wx = cx - smp.lateral.x * (HALF + 0.6) * sgn;
+    const wz = cz - smp.lateral.z * (HALF + 0.6) * sgn;
+    wallPos.push(wx, cy, wz, wx, cy + 1.05, wz);
+  }
+  for (let i = 0; i < STEPS; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    idxArr.push(a, c, b, b, c, d);
+    const wa = i * 2, wb = wa + 1, wc = wa + 2, wd = wa + 3;
+    wallIdx.push(wa, wc, wb, wb, wc, wd, wb, wc, wa, wd, wc, wb);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvArr, 2));
+  g.setIndex(idxArr); g.computeVertexNormals();
+  const laneMat = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.92, metalness: 0.0 });
+  const lane = new THREE.Mesh(g, laneMat);
+  lane.receiveShadow = true;
+  group.add(lane);
+
+  const wg = new THREE.BufferGeometry();
+  wg.setAttribute('position', new THREE.Float32BufferAttribute(wallPos, 3));
+  wg.setIndex(wallIdx); wg.computeVertexNormals();
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0xd8d8d4, roughness: 0.8, side: THREE.DoubleSide });
+  const wall = new THREE.Mesh(wg, wallMat);
+  wall.castShadow = true; wall.receiveShadow = true;
+  group.add(wall);
+
+  // Garage boxes along the far side of the lane.
+  const boxGeo = new THREE.BoxGeometry(7.5, 4.2, 9);
+  for (let i = 0; i < 10; i++) {
+    const s = pit.entryS + span * (0.26 + i * 0.048);
+    const smp = track.sample(s);
+    const off = pit.lane(s);
+    const sgn = Math.sign(off) || 1;
+    const t = TEAMS[i % TEAMS.length];
+    const m = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({
+      color: new THREE.Color(t.colors.primary).multiplyScalar(0.55), roughness: 0.85,
+    }));
+    m.position.set(
+      smp.pos.x + smp.lateral.x * (off + sgn * (HALF + 5.0)),
+      smp.pos.y + 2.1,
+      smp.pos.z + smp.lateral.z * (off + sgn * (HALF + 5.0)),
+    );
+    m.rotation.y = Math.atan2(smp.tangent.x, smp.tangent.z);
+    m.castShadow = true; m.receiveShadow = true;
+    group.add(m);
+  }
+  group.matrixAutoUpdate = false;
+  group.updateMatrix();
+  scene.add(group);
+  return {
+    group,
+    dispose() {
+      g.dispose(); wg.dispose(); boxGeo.dispose(); laneMat.dispose(); wallMat.dispose();
+      scene.remove(group);
+    },
+  };
 }
 
 // ---------------------------------------------------------------- fallbacks
