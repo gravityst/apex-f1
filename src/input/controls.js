@@ -226,19 +226,32 @@ export function createControls(opts = {}) {
   function update(dt) {
     const padActive = pollGamepad();
 
-    // --- steering ---
-    let targetSteer = 0;
-    if (padActive) targetSteer = padSteer;
-    else if (state.source === 'touch') {
-      targetSteer = settings.layout === 'tilt' ? tiltValue : steerRaw;
-    } else {
-      const l = anyHeld(KEYMAP.left) ? 1 : 0;
-      const r = anyHeld(KEYMAP.right) ? 1 : 0;
-      targetSteer = r - l;
-    }
+    // Every source is read every frame and the strongest wins. Branching on a
+    // sticky "source" field means one stray touch or a phantom gamepad can
+    // silently kill the keyboard for the rest of the session.
+    const kbLeft = anyHeld(KEYMAP.left) ? 1 : 0;
+    const kbRight = anyHeld(KEYMAP.right) ? 1 : 0;
+    const kbSteer = kbRight - kbLeft;
+    const kbThrottle = anyHeld(KEYMAP.throttle) ? 1 : 0;
+    const kbBrake = anyHeld(KEYMAP.brake) ? 1 : 0;
+
+    const touchActive = !!touchUI && touchUI.style.display !== 'none';
+    const tSteer = touchActive ? (settings.layout === 'tilt' ? tiltValue : steerRaw) : 0;
+    const tThrottleDown = touchActive && touchUI._isDown('throttle');
+    const tBrakeDown = touchActive && touchUI._isDown('brake');
+    const tBrake = tBrakeDown ? 1 : 0;
+    const tThrottle = touchActive
+      ? (settings.assistThrottle ? (tBrakeDown ? 0 : 1) : (tThrottleDown ? 1 : 0))
+      : 0;
+
+    // --- steering: take whichever source is actually deflected ---
+    let targetSteer = kbSteer;
+    let analog = false;
+    if (Math.abs(tSteer) > Math.abs(targetSteer)) { targetSteer = tSteer; analog = settings.layout !== 'drag'; }
+    if (padActive && Math.abs(padSteer) > Math.abs(targetSteer)) { targetSteer = padSteer; analog = true; }
     targetSteer = THREE.MathUtils.clamp(targetSteer * settings.sensitivity, -1, 1);
 
-    if (padActive || (state.source === 'touch' && settings.layout !== 'drag')) {
+    if (analog) {
       steerSmooth += (targetSteer - steerSmooth) * Math.min(1, dt * 22);
     } else {
       // digital sources need a rate limit or the car is undriveable
@@ -247,17 +260,9 @@ export function createControls(opts = {}) {
     }
     state.steer = THREE.MathUtils.clamp(steerSmooth, -1, 1);
 
-    // --- pedals ---
-    if (padActive) { state.throttle = padThrottle; state.brake = padBrake; }
-    else if (state.source === 'touch') {
-      const t = touchUI && touchUI._isDown('throttle');
-      const b = touchUI && touchUI._isDown('brake');
-      state.brake = b ? 1 : 0;
-      state.throttle = settings.assistThrottle ? (b ? 0 : 1) : (t ? 1 : 0);
-    } else {
-      state.throttle = anyHeld(KEYMAP.throttle) ? 1 : 0;
-      state.brake = anyHeld(KEYMAP.brake) ? 1 : 0;
-    }
+    // --- pedals: strongest input across all sources ---
+    state.throttle = Math.max(kbThrottle, tThrottle, padActive ? padThrottle : 0);
+    state.brake = Math.max(kbBrake, tBrake, padActive ? padBrake : 0);
 
     // --- discrete ---
     state.shiftUp = anyPressed(KEYMAP.shiftUp) || pressed.has('__shiftUp');

@@ -124,6 +124,15 @@ export function createAIDriver(car, track, opts = {}) {
     if (surfGrip < 0.92) pace *= THREE.MathUtils.clamp(0.42 + surfGrip * 0.55, 0.42, 1);
 
     // Formation/standing start and safety car neutralise pace.
+    // Nobody moves before the lights go out. Without this the whole field
+    // accelerates through the countdown and rear-ends the grid.
+    if (race.state === 'grid' || race.state === 'countdown') {
+      c.throttle = 0; c.brake = 1;
+      c.input.throttle = 0; c.input.brake = 1; c.input.steer = 0;
+      ai.throttleFilter = 0; ai.brakeFilter = 1; ai.steerFilter = 0;
+      c.gear = 1;
+      return;
+    }
     if (race.state === 'formation') pace *= 0.42;
     if (race.safetyCar) pace *= 0.58;
 

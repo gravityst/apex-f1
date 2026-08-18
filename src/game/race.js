@@ -386,9 +386,13 @@ export function createRace(opts) {
         if (alon > HALF_L * 2 || alat > HALF_W * 2) continue;
         const pen = Math.min(HALF_L * 2 - alon, HALF_W * 2 - alat);
         if (pen <= 0) continue;
-        _n.copy(_r).multiplyScalar(1 / dist);
+        // Resolve in the horizontal plane only. A normal with a vertical
+        // component makes a concertina'd grid launch cars into the sky.
+        _n.set(_r.x, 0, _r.z);
+        const hLen = _n.length();
+        if (hLen < 1e-4) _n.set(1, 0, 0); else _n.multiplyScalar(1 / hLen);
         const relV = _p.subVectors(b.velocity, a.velocity).dot(_n);
-        const push = pen * 0.5 + 0.01;
+        const push = Math.min(pen * 0.5 + 0.01, 0.45);   // never teleport a car
         a.position.addScaledVector(_n, -push);
         b.position.addScaledVector(_n, push);
         if (relV < 0) {

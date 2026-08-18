@@ -206,7 +206,11 @@ export function createVehicle(opts = {}) {
   function reset(s, lateral, heading) {
     const sm = track.sample(s);
     car.position.copy(sm.pos).addScaledVector(sm.lateral, lateral || 0);
-    car.position.y += cfg.restLength + 0.30;
+    // Place the car at its true static ride height. Spawning it 0.2 m high and
+    // letting it drop makes the whole grid settle and creep before the start.
+    const staticDefl = (cfg.mass + cfg.fuelStart) * 9.81 * 0.25
+      / ((cfg.springFront + cfg.springRear) * 0.5);
+    car.position.y += cfg.wheelRadiusF + (cfg.restLength - staticDefl) - (cfg.restLength + 0.12);
     const h = heading != null ? heading : Math.atan2(sm.tangent.x, sm.tangent.z);
     car.quaternion.setFromAxisAngle(AXIS_Y, h);
     car.velocity.set(0, 0, 0);

@@ -119,11 +119,99 @@ async function boot() {
   requestAnimationFrame(frame);
 }
 
+// ---------------------------------------------------------------- garage preview
+// A small self-contained scene showing the selected car and driver, rendered
+// into the container the menus module leaves empty.
+const garage = { renderer: null, scene: null, camera: null, model: null, driver: null, raf: 0, host: null, key: '' };
+
+function stopGaragePreview() {
+  if (garage.raf) cancelAnimationFrame(garage.raf);
+  garage.raf = 0;
+  if (garage.renderer && garage.renderer.domElement.parentNode) {
+    garage.renderer.domElement.parentNode.removeChild(garage.renderer.domElement);
+  }
+}
+
+function startGaragePreview(teamId, driverIndex) {
+  const host = document.getElementById('garage-preview')
+    || menuRoot.querySelector('.garage-preview, [data-garage-preview]');
+  if (!host || !mod.carModel) return;
+  const team = TEAMS.find((t) => t.id === teamId) || TEAMS[0];
+  const driver = team.drivers[driverIndex] || team.drivers[0];
+  const key = `${team.id}|${driver.num}`;
+
+  stopGaragePreview();
+  try {
+    if (!garage.renderer) {
+      garage.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      garage.renderer.outputColorSpace = THREE.SRGBColorSpace;
+      garage.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      garage.renderer.toneMappingExposure = 1.0;
+      garage.scene = new THREE.Scene();
+      garage.camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
+      // Three-point lighting so the carbon and clearcoat actually read.
+      const key1 = new THREE.DirectionalLight(0xffffff, 3.2); key1.position.set(4, 6, 6);
+      const key2 = new THREE.DirectionalLight(0x9fc0ff, 1.5); key2.position.set(-6, 3, -4);
+      const rim = new THREE.DirectionalLight(0xffd9a0, 2.0); rim.position.set(0, 2, -8);
+      garage.scene.add(key1, key2, rim, new THREE.HemisphereLight(0xdfe9ff, 0x202024, 0.9));
+      const floor = new THREE.Mesh(
+        new THREE.CircleGeometry(7, 48),
+        new THREE.MeshStandardMaterial({ color: 0x0d1016, roughness: 0.35, metalness: 0.1 }),
+      );
+      floor.rotation.x = -Math.PI / 2; floor.position.y = -0.02;
+      garage.scene.add(floor);
+    }
+    if (garage.key !== key) {
+      if (garage.model) { try { garage.scene.remove(garage.model.group); garage.model.dispose?.(); } catch {} }
+      garage.model = mod.carModel.createCarModel({ team, driver, quality: app.engine.quality });
+      garage.scene.add(garage.model.group);
+      if (mod.driverModel && garage.model.cockpitAnchor) {
+        try {
+          garage.driver = mod.driverModel.createDriver({ driver, team, quality: app.engine.quality });
+          if (garage.driver?.group) garage.model.cockpitAnchor.add(garage.driver.group);
+        } catch {}
+      }
+      garage.key = key;
+    }
+    // The panel ships very short; a car needs a sane aspect to read at all.
+    if (!host.style.minHeight) {
+      host.style.minHeight = 'min(46vh, 340px)';
+      host.style.position = host.style.position || 'relative';
+    }
+    host.appendChild(garage.renderer.domElement);
+    garage.renderer.domElement.style.cssText = 'width:100%;height:100%;display:block';
+    garage.host = host;
+
+    let angle = 0.6;
+    const tick = () => {
+      garage.raf = requestAnimationFrame(tick);
+      const w = host.clientWidth || 480, h = host.clientHeight || 270;
+      if (garage.renderer.domElement.width !== w || garage.renderer.domElement.height !== h) {
+        garage.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+        garage.renderer.setSize(w, h, false);
+        garage.camera.aspect = w / h;
+        garage.camera.updateProjectionMatrix();
+      }
+      angle += 0.0042;
+      const r = 7.6;
+      garage.camera.position.set(Math.sin(angle) * r, 1.75, Math.cos(angle) * r);
+      garage.camera.lookAt(0, 0.55, 0);
+      if (garage.driver?.setSteer) garage.driver.setSteer(Math.sin(angle * 1.7) * 0.45);
+      garage.renderer.render(garage.scene, garage.camera);
+    };
+    tick();
+  } catch (err) { console.warn('[apex] garage preview failed', err); }
+}
+
 function showScreen(name, data) {
   app.screen = name;
   if (app.menus) { try { name === 'race' ? app.menus.hide() : app.menus.show(name, data); } catch {} }
   if (app.hud) { try { app.hud.setVisible(name === 'race'); } catch {} }
   if (app.controls) app.controls.setTouchVisible(name === 'race' && app.controls.isTouch);
+  if (name === 'garage') {
+    const cfg = (app.menus && app.menus.getConfig && app.menus.getConfig()) || {};
+    startGaragePreview(cfg.teamId || TEAMS[0].id, cfg.driverIndex || 0);
+  } else stopGaragePreview();
   hudRoot.setAttribute('aria-hidden', name === 'race' ? 'false' : 'true');
   document.body.classList.toggle('in-race', name === 'race');
 }
@@ -136,6 +224,11 @@ function wireMenus() {
   on('quit', () => { teardownRace(); showScreen('title'); });
   on('nextRace', () => { teardownRace(); showScreen('setup'); });
   on('settingChanged', ({ key, value }) => applySetting(key, value));
+  on('garageChanged', (cfg) => {
+    if (app.screen === 'garage' && cfg && (cfg.teamId || cfg.driverIndex != null)) {
+      startGaragePreview(cfg.teamId || TEAMS[0].id, cfg.driverIndex || 0);
+    }
+  });
 }
 
 function applySetting(key, value) {
@@ -264,6 +357,7 @@ async function startRace(cfg) {
     } catch (err) { console.warn('[apex] track world failed', err); app.world = null; }
   }
   if (!app.world) buildFallbackWorld(scene);
+  gradeWorldMaterials(app.world, circuit);
   step(0.62, 'Assembling cars');
   await nextFrame();
 
@@ -395,6 +489,48 @@ function nextFrame() {
     requestAnimationFrame(finish);
     setTimeout(finish, 40);
   });
+}
+
+/**
+ * Trackside colour grade. Procedural materials tend to come out as flat,
+ * over-saturated blocks of colour; real circuits are darker, duller and much
+ * more varied. This pulls the run-off surfaces toward reference photography.
+ */
+function gradeWorldMaterials(world, circuit) {
+  if (!world || !world.materials) return;
+  const m = world.materials;
+  const tint = circuit?.ambience?.grassColor;
+  try {
+    if (m.grass) {
+      // Real trackside grass is a dull olive, not a bright lawn green.
+      m.grass.color.set(tint || 0x53703a).multiplyScalar(0.86);
+      m.grass.roughness = 1.0;
+      m.grass.metalness = 0.0;
+      if ('envMapIntensity' in m.grass) m.grass.envMapIntensity = 0.35;
+    }
+    if (m.astro) {
+      // Astroturf reads as a deep synthetic green, not white stripes.
+      m.astro.color.set(0x2f6b34);
+      m.astro.roughness = 0.94;
+      if ('envMapIntensity' in m.astro) m.astro.envMapIntensity = 0.30;
+    }
+    if (m.gravel) {
+      m.gravel.color.set(0x9c8f76);
+      m.gravel.roughness = 1.0;
+      if ('envMapIntensity' in m.gravel) m.gravel.envMapIntensity = 0.25;
+    }
+    if (m.concrete) {
+      m.concrete.color.set(0x9a9a95);
+      m.concrete.roughness = 0.92;
+      if ('envMapIntensity' in m.concrete) m.concrete.envMapIntensity = 0.4;
+    }
+    if (m.asphalt) {
+      // Fresh F1 tarmac is near-black and only mildly reflective when dry.
+      m.asphalt.color.multiplyScalar(0.82);
+      if ('envMapIntensity' in m.asphalt) m.asphalt.envMapIntensity = 0.55;
+    }
+    if (m.kerb && 'envMapIntensity' in m.kerb) m.kerb.envMapIntensity = 0.5;
+  } catch (err) { console.warn('[apex] material grade skipped', err); }
 }
 
 // ---------------------------------------------------------------- fallbacks
@@ -536,6 +672,20 @@ function stepSimulation(dtRaw, input) {
   const aiCtx = { cars: app.cars, weather: race.weather, race, playerPace: race.playerPace };
   for (const ai of app.ais) {
     try { ai.update(dtRaw, aiCtx); } catch (err) { /* one bad driver must not stop the race */ }
+  }
+
+  // ---- hold the field until the lights go out ----
+  if (race.state === 'grid' || race.state === 'countdown') {
+    for (const car of app.cars) {
+      car.throttle = 0; car.brake = 1;
+      car.input.throttle = 0; car.input.brake = 1;
+      if (!car.isPlayer) car.input.steer = 0;
+      // Sitting on the grid on the brakes: pin them so nothing creeps or
+      // settles into a neighbour before the lights go out.
+      car.velocity.set(0, 0, 0);
+      car.angularVelocity.set(0, 0, 0);
+      for (const w of car.wheels) w.omega = 0;
+    }
   }
 
   // ---- fixed-step physics ----
