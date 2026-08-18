@@ -233,6 +233,11 @@ async function startRace(cfg) {
   step(0.4, 'Building circuit');
   await nextFrame();
 
+  // Floodlit night circuits still need a floor of ambient light or the track is
+  // genuinely too dark to drive. Scaled by time of day in updateVisuals().
+  app.ambient = new THREE.AmbientLight(0xaebfd6, 0.25);
+  scene.add(app.ambient);
+
   app._stage = 'weather';
   // ---- weather effects ----
   if (mod.weather) {
@@ -580,6 +585,15 @@ function updateVisuals(dt) {
 
   // sky + lighting follow the player so shadows stay tight
   try { app.sky?.update?.(w, dt, player ? player.position : cam.position); } catch {}
+  if (app.ambient) {
+    // 0 at midday, full at night, with a smooth dusk/dawn ramp.
+    const h = w.timeOfDay;
+    const night = THREE.MathUtils.clamp(
+      Math.max((6.6 - h) / 1.6, (h - 18.4) / 1.6), 0, 1,
+    );
+    app.ambient.intensity = 0.16 + night * 1.35;
+    app.ambient.color.setHex(night > 0.5 ? 0x9fb4d8 : 0xbfd0e4);
+  }
   if (engine.scene.fog && app.sky?.getFogColor) {
     const c = app.sky.getFogColor();
     if (c) engine.scene.fog.color.copy(c);
