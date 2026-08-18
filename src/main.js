@@ -1,0 +1,690 @@
+/**
+ * APEX F1 — application bootstrap and game loop.
+ *
+ * Every optional subsystem is initialised defensively: if one fails the game
+ * keeps running without it rather than showing a black screen.
+ */
+import * as THREE from 'three';
+import { createEngine, detectQuality, QUALITY_TIERS } from './core/engine.js';
+import { createTrack } from './track/track.js';
+import { CIRCUITS, getCircuit } from './track/circuits.js';
+import { createVehicle } from './physics/vehicle.js';
+import { createAIDriver, DIFFICULTY } from './ai/driver.js';
+import { createRace, fmt } from './game/race.js';
+import { TEAMS, GRID, TYRE_COMPOUNDS } from './game/teams.js';
+import { createControls } from './input/controls.js';
+
+const canvas = document.getElementById('scene');
+const hudRoot = document.getElementById('hud-root');
+const menuRoot = document.getElementById('menu-root');
+const touchRoot = document.getElementById('touch-root');
+
+const SAVE_KEY = 'apex-f1-settings-v1';
+const PHYS_HZ = 120;
+const PHYS_DT = 1 / PHYS_HZ;
+
+const settings = Object.assign({
+  quality: 'auto', resolutionScale: 1, postFX: true, shadows: true,
+  particles: 1, fov: 0, motionBlur: true,
+  masterVolume: 0.8, engineVolume: 0.8, uiVolume: 0.7,
+  units: 'kmh', camera: 'chase',
+  tc: 0.45, abs: 0.55, autoGear: true, stability: 0.45, racingLineAid: 'off',
+  touchLayout: 'drag', steerSensitivity: 1, assistThrottle: false,
+}, loadSettings());
+
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY)) || {}; } catch { return {}; }
+}
+function saveSettings() {
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(settings)); } catch { /* private mode */ }
+}
+
+// ---------------------------------------------------------------- lazy modules
+const mod = {};
+async function loadModules(progress) {
+  const list = [
+    ['sky', () => import('./render/sky.js')],
+    ['geometry', () => import('./track/geometry.js')],
+    ['carModel', () => import('./render/carModel.js')],
+    ['driverModel', () => import('./render/driver.js')],
+    ['particles', () => import('./render/particles.js')],
+    ['weather', () => import('./render/weather.js')],
+    ['effects', () => import('./render/effects.js')],
+    ['audio', () => import('./game/audio.js')],
+    ['hud', () => import('./game/hud.js')],
+    ['menus', () => import('./game/menus.js')],
+  ];
+  for (let i = 0; i < list.length; i++) {
+    const [name, load] = list[i];
+    try { mod[name] = await load(); }
+    catch (err) { console.warn(`[apex] module "${name}" failed to load`, err); mod[name] = null; }
+    progress((i + 1) / list.length);
+  }
+}
+
+// ---------------------------------------------------------------- app state
+const app = {
+  engine: null, controls: null, menus: null, hud: null, audio: null,
+  sky: null, weather: null, postfx: null, particles: null, world: null,
+  track: null, circuit: null, race: null,
+  cars: [], ais: [], models: [], player: null,
+  running: false, paused: false, screen: 'loading',
+  accumulator: 0, last: 0, fps: 60, frames: 0, fpsTime: 0,
+  config: null, ready: false,
+};
+window.__APEX = app;
+// Exposed for debugging and automated smoke tests.
+app.startRace = (cfg) => startRace(cfg);
+app.showScreen = (n, d) => showScreen(n, d);
+
+function qualityName() {
+  return settings.quality === 'auto' ? detectQuality() : settings.quality;
+}
+
+// ---------------------------------------------------------------- boot
+async function boot() {
+  app.engine = createEngine(canvas, { quality: qualityName(), resScale: settings.resolutionScale });
+  resize();
+  window.addEventListener('resize', resize, { passive: true });
+  window.addEventListener('orientationchange', () => setTimeout(resize, 250), { passive: true });
+
+  app.controls = createControls({
+    element: canvas, touchRoot,
+    settings: {
+      layout: settings.touchLayout,
+      sensitivity: settings.steerSensitivity,
+      assistThrottle: settings.assistThrottle,
+    },
+  });
+  if (app.controls.isTouch) { app.controls.setTouchVisible(true); app.controls.setTouchVisible(false); }
+
+  await loadModules((p) => { if (app.menus) app.menus.setLoadingProgress(p * 0.5, 'Loading systems'); });
+
+  if (mod.menus) {
+    try {
+      app.menus = mod.menus.createMenus(menuRoot, { circuits: CIRCUITS, teams: TEAMS, settings });
+      wireMenus();
+    } catch (err) { console.warn('[apex] menus failed', err); }
+  }
+  if (mod.hud) {
+    try { app.hud = mod.hud.createHUD(hudRoot, { units: settings.units }); app.hud.setVisible(false); }
+    catch (err) { console.warn('[apex] hud failed', err); }
+  }
+  if (mod.audio) {
+    try { app.audio = mod.audio.createAudio({}); } catch (err) { console.warn('[apex] audio failed', err); }
+  }
+
+  app.ready = true;
+  showScreen('title');
+  requestAnimationFrame(frame);
+}
+
+function showScreen(name, data) {
+  app.screen = name;
+  if (app.menus) { try { name === 'race' ? app.menus.hide() : app.menus.show(name, data); } catch {} }
+  if (app.hud) { try { app.hud.setVisible(name === 'race'); } catch {} }
+  if (app.controls) app.controls.setTouchVisible(name === 'race' && app.controls.isTouch);
+  hudRoot.setAttribute('aria-hidden', name === 'race' ? 'false' : 'true');
+}
+
+function wireMenus() {
+  const on = (ev, cb) => { try { app.menus.on(ev, cb); } catch {} };
+  on('start', (cfg) => startRace(cfg));
+  on('restart', () => startRace(app.config));
+  on('resume', () => { app.paused = false; showScreen('race'); app.audio?.resume?.(); });
+  on('quit', () => { teardownRace(); showScreen('title'); });
+  on('nextRace', () => { teardownRace(); showScreen('setup'); });
+  on('settingChanged', ({ key, value }) => applySetting(key, value));
+}
+
+function applySetting(key, value) {
+  settings[key] = value;
+  saveSettings();
+  switch (key) {
+    case 'quality':
+      app.engine.setQuality(value === 'auto' ? detectQuality() : value);
+      app.postfx?.setQuality?.(app.engine.quality);
+      app.particles?.setQuality?.(app.engine.quality);
+      app.sky?.setQuality?.(app.engine.quality);
+      app.world?.setQuality?.(app.engine.quality);
+      break;
+    case 'resolutionScale': app.engine.setResolutionScale(value); break;
+    case 'postFX': app.postfx?.setEnabled?.(value); break;
+    case 'shadows': app.engine.renderer.shadowMap.enabled = !!value; break;
+    case 'masterVolume': app.audio?.setMasterVolume?.(value); break;
+    case 'engineVolume': app.audio?.setEngineVolume?.(value); break;
+    case 'uiVolume': app.audio?.setUIVolume?.(value); break;
+    case 'units': app.hud?.setUnits?.(value); break;
+    case 'camera': app.engine.setMode(value); break;
+    case 'fov': app.engine.rig.fovBase = 62 + value; break;
+    case 'touchLayout': app.controls?.setLayout?.(value); break;
+    case 'steerSensitivity': app.controls?.setSensitivity?.(value); break;
+    case 'assistThrottle': app.controls?.setAssistThrottle?.(value); break;
+    case 'tc': case 'abs': case 'autoGear': case 'stability':
+      if (app.player) app.player.aids[key] = value;
+      break;
+    default: break;
+  }
+}
+
+// ---------------------------------------------------------------- race setup
+const worldCache = new Map();   // circuitId -> built world (rebuilding costs ~10s)
+
+function teardownRace() {
+  app.running = false;
+  // Keep the world alive in the cache; only detach it from the scene.
+  if (app.world && !worldCache.has(app.world._circuitId)) {
+    if (app.world.dispose) { try { app.world.dispose(); } catch {} }
+  }
+  for (const m of app.models) { try { m.dispose?.(); } catch {} }
+  if (app.engine) {
+    const scene = app.engine.scene;
+    for (let i = scene.children.length - 1; i >= 0; i--) scene.remove(scene.children[i]);
+  }
+  app.audio?.stopEngine?.();
+  app.cars = []; app.ais = []; app.models = []; app.player = null;
+  app.race = null; app.track = null; app.world = null;
+}
+
+async function startRace(cfg) {
+  cfg = Object.assign({
+    circuitId: CIRCUITS[0].id, teamId: TEAMS[0].id, driverIndex: 0,
+    difficulty: 'adaptive', laps: 5, weather: 'clear', timeOfDay: null,
+    tyre: 'medium', ersMode: 1, brakeBias: 0.575, wingFront: 0.5, wingRear: 0.5,
+  }, cfg || {});
+  app.config = cfg;
+  teardownRace();
+  showScreen('loading');
+  const step = (p, label) => { app._stage = label; try { app.menus?.setLoadingProgress(p, label); } catch {} };
+  step(0.05, 'Surveying circuit');
+  await nextFrame();
+
+  const circuit = getCircuit(cfg.circuitId) || CIRCUITS[0];
+  app.circuit = circuit;
+  app.track = createTrack(circuit);
+  step(0.25, 'Solving racing line');
+  await nextFrame();
+
+  const engine = app.engine;
+  const scene = engine.scene;
+  const quality = engine.quality;
+
+  app._stage = 'sky';
+  // ---- sky + lighting ----
+  if (mod.sky) {
+    try {
+      app.sky = mod.sky.createSky(engine.renderer, scene, { quality });
+      if (app.sky.sunLight) scene.add(app.sky.sunLight);
+      if (app.sky.hemiLight) scene.add(app.sky.hemiLight);
+      if (app.sky.fillLight) scene.add(app.sky.fillLight);
+    } catch (err) { console.warn('[apex] sky failed', err); app.sky = null; }
+  }
+  if (!app.sky) {
+    const sun = new THREE.DirectionalLight(0xfff3e0, 2.6);
+    sun.position.set(280, 420, 180); sun.castShadow = quality.shadows;
+    if (sun.shadow) {
+      sun.shadow.mapSize.set(quality.shadowMapSize, quality.shadowMapSize);
+      const c = sun.shadow.camera; c.left = -160; c.right = 160; c.top = 160; c.bottom = -160;
+      c.near = 1; c.far = 900; sun.shadow.bias = -0.0008;
+    }
+    scene.add(sun, new THREE.HemisphereLight(0x9fc5ff, 0x4a4437, 1.15));
+    app.sky = { sunLight: sun, update() {}, getFogColor: () => new THREE.Color(0x9fb6cc) };
+  }
+  step(0.4, 'Building circuit');
+  await nextFrame();
+
+  app._stage = 'weather';
+  // ---- weather effects ----
+  if (mod.weather) {
+    try { app.weather = mod.weather.createWeather(scene, engine.camera, { quality }); }
+    catch (err) { console.warn('[apex] weather failed', err); app.weather = null; }
+  }
+
+  app._stage = 'world';
+  // ---- track world ----
+  const cacheKey = `${circuit.id}|${quality.tier}`;
+  if (worldCache.has(cacheKey)) {
+    app.world = worldCache.get(cacheKey);
+    if (app.world?.group) scene.add(app.world.group);
+  } else if (mod.geometry) {
+    try {
+      app.world = mod.geometry.buildTrackWorld(circuit, app.track.curve, {
+        quality,
+        wetnessUniform: app.weather?.getWetnessUniform?.(),
+        puddleMask: app.weather?.getPuddleMask?.(),
+      });
+      if (app.world?.group) scene.add(app.world.group);
+      if (app.world) { app.world._circuitId = cacheKey; worldCache.set(cacheKey, app.world); }
+    } catch (err) { console.warn('[apex] track world failed', err); app.world = null; }
+  }
+  if (!app.world) buildFallbackWorld(scene);
+  step(0.62, 'Assembling cars');
+  await nextFrame();
+
+  app._stage = 'grid';
+  // ---- grid ----
+  const playerTeam = TEAMS.find((t) => t.id === cfg.teamId) || TEAMS[0];
+  const playerDriver = playerTeam.drivers[cfg.driverIndex] || playerTeam.drivers[0];
+  const entries = GRID.slice();
+  // player first on the entry list, rest ordered by car performance
+  entries.sort((a, b) => (b.team.performance + b.skill) - (a.team.performance + a.skill));
+  const playerEntry = entries.find((e) => e.teamId === playerTeam.id && e.num === playerDriver.num) || entries[0];
+
+  let sharedDriver = null;
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const isPlayer = e === playerEntry;
+    const car = createVehicle({
+      track: app.track, team: e.team, driver: e, isPlayer,
+      tyre: isPlayer ? cfg.tyre : (i < 10 ? 'medium' : 'hard'),
+    });
+    const slot = app.track.startGrid[Math.min(i, app.track.startGrid.length - 1)];
+    car.reset(slot.s, slot.lateral, slot.heading);
+    car.gridIndex = i;
+    if (isPlayer) {
+      app.player = car;
+      car.aids.tc = settings.tc; car.aids.abs = settings.abs;
+      car.aids.autoGear = settings.autoGear; car.aids.stability = settings.stability;
+      car.cfg.brakeBias = cfg.brakeBias;
+    } else {
+      app.ais.push(createAIDriver(car, app.track, { difficulty: cfg.difficulty, gridIndex: i }));
+    }
+    app.cars.push(car);
+
+    // visual model
+    let model = null;
+    if (mod.carModel) {
+      try {
+        model = mod.carModel.createCarModel({ team: e.team, driver: e, quality });
+        if (model?.group) scene.add(model.group);
+        if (mod.driverModel && model?.cockpitAnchor) {
+          try {
+            if (isPlayer) {
+              const dm = mod.driverModel.createDriver({ driver: e, team: e.team, quality });
+              if (dm?.group) { model.cockpitAnchor.add(dm.group); model.driverFigure = dm; }
+            } else {
+              // AI drivers are only ever seen from outside; clone one shared rig
+              // (geometry and materials are shared by clone()) instead of
+              // building twenty, which costs ~3 s of load time.
+              if (!sharedDriver) sharedDriver = mod.driverModel.createDriver({ driver: e, team: e.team, quality });
+              if (sharedDriver?.group) model.cockpitAnchor.add(sharedDriver.group.clone(true));
+            }
+          } catch {}
+        }
+      } catch (err) { if (i === 0) console.warn('[apex] car model failed', err); model = null; }
+    }
+    if (!model) model = buildFallbackCar(scene, e.team);
+    app.models.push(model);
+    if (i % 5 === 0) { step(0.62 + 0.22 * (i / entries.length), 'Assembling cars'); await nextFrame(); }
+  }
+
+  app._stage = 'particles';
+  // ---- particles + post ----
+  if (mod.particles) {
+    try { app.particles = mod.particles.createParticles(scene, { quality }); }
+    catch (err) { console.warn('[apex] particles failed', err); app.particles = null; }
+  }
+  if (mod.effects && settings.postFX) {
+    try {
+      app.postfx = mod.effects.createPostFX(engine.renderer, scene, engine.camera, {
+        quality,
+        // The stock tier is far too hazy in daylight: tight bloom only on real
+        // highlights (sun, brake glow, sparks), and almost no lens dirt.
+        bloomStrength: 0.26, bloomRadius: 0.28, bloomThreshold: 0.92,
+        dirt: 0.10, vignette: 0.40, chromatic: 0.30, grain: 0.022,
+        motionBlur: settings.motionBlur ? 0.75 : 0,
+      });
+    } catch (err) { console.warn('[apex] postfx failed', err); app.postfx = null; }
+  }
+  step(0.92, 'Formation lap');
+  await nextFrame();
+
+  app._stage = 'director';
+  // ---- race director ----
+  app.race = createRace({
+    track: app.track, cars: app.cars, circuit,
+    laps: cfg.laps, weather: cfg.weather,
+    onEvent: (text, kind) => {
+      try { app.hud?.showMessage(text, kind, kind === 'lightsout' ? 1600 : 2600); } catch {}
+      if (kind === 'lightsout') app.audio?.playUI?.('lightsout');
+      else if (kind === 'penalty') app.audio?.playUI?.('penalty');
+    },
+  });
+  if (cfg.timeOfDay != null) app.race.weather.timeOfDay = cfg.timeOfDay;
+  else app.race.weather.timeOfDay = circuit.ambience?.defaultTimeOfDay ?? 14.5;
+
+  try { app.hud?.setTrackOutline(app.track.outline); } catch {}
+  try { app.hud?.setTeamAccent?.(playerTeam.colors.primary); } catch {}
+
+  engine.setMode(settings.camera);
+  engine.rig.initialised = false;
+
+  // audio needs a user gesture; startRace is always reached from a click/tap
+  app._stage = 'audio';
+  if (app.audio && !app.audio.ready) {
+    // Never let audio init block the race starting.
+    try { await Promise.race([app.audio.init(), new Promise((r) => setTimeout(r, 1500))]); } catch {}
+  }
+  app.audio?.setMasterVolume?.(settings.masterVolume);
+  app.audio?.startEngine?.();
+
+  step(1, 'Ready');
+  app.running = true;
+  app.paused = false;
+  app.last = performance.now();
+  app.accumulator = 0;
+  showScreen('race');
+  app.race.startCountdown();
+}
+
+/**
+ * Yield to the browser between loading stages. requestAnimationFrame does NOT
+ * fire in a background tab, so racing it against a timer keeps loading alive if
+ * the player switches away mid-load.
+ */
+function nextFrame() {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    requestAnimationFrame(finish);
+    setTimeout(finish, 40);
+  });
+}
+
+// ---------------------------------------------------------------- fallbacks
+function buildFallbackWorld(scene) {
+  const t = app.track;
+  const N = 900, across = 6;
+  const pos = [], idx = [];
+  for (let i = 0; i <= N; i++) {
+    const sm = t.sample((i / N) * t.length);
+    for (let j = 0; j <= across; j++) {
+      const u = (j / across) * 2 - 1;
+      const p = sm.pos.clone().addScaledVector(sm.lateral, u * sm.width);
+      pos.push(p.x, p.y + 0.01, p.z);
+    }
+  }
+  const row = across + 1;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < across; j++) {
+      const a = i * row + j, b = a + 1, c = a + row, d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx); g.computeVertexNormals();
+  const road = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x2b2d31, roughness: 0.92 }));
+  road.receiveShadow = true;
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(9000, 9000),
+    new THREE.MeshStandardMaterial({ color: 0x3d5a34, roughness: 1 }),
+  );
+  ground.rotation.x = -Math.PI / 2; ground.position.y = -0.35; ground.receiveShadow = true;
+  const group = new THREE.Group(); group.add(ground, road);
+  scene.add(group);
+  app.world = { group, roadMesh: road, outline: t.outline, dispose() { g.dispose(); } };
+}
+
+function buildFallbackCar(scene, team) {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(1.9, 0.55, 5.4),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color(team.colors.primary), metalness: 0.4, roughness: 0.35 }),
+  );
+  body.position.y = 0.45; body.castShadow = true;
+  group.add(body);
+  const wheels = [];
+  const wg = new THREE.CylinderGeometry(0.36, 0.36, 0.34, 18);
+  const wm = new THREE.MeshStandardMaterial({ color: 0x0b0b0b, roughness: 0.9 });
+  for (const [x, z] of [[-0.81, 1.64], [0.81, 1.64], [-0.78, -1.96], [0.78, -1.96]]) {
+    const w = new THREE.Mesh(wg, wm);
+    w.rotation.z = Math.PI / 2; w.castShadow = true;
+    const pivot = new THREE.Group(); pivot.position.set(x, 0.36, z); pivot.add(w);
+    group.add(pivot); wheels.push(pivot);
+  }
+  scene.add(group);
+  return {
+    group, wheels,
+    update(state) {
+      for (let i = 0; i < 4; i++) {
+        const w = state.wheels[i];
+        wheels[i].rotation.y = w.steerAngle;
+        wheels[i].children[0].rotation.x = w.spinAngle;
+      }
+    },
+    dispose() { wg.dispose(); wm.dispose(); scene.remove(group); },
+  };
+}
+
+// ---------------------------------------------------------------- loop
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  app.engine?.resize(w, h);
+  app.postfx?.setSize?.(w, h);
+  app.hud?.resize?.();
+  app.menus?.resize?.();
+}
+
+const _tmpV = new THREE.Vector3();
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dtRaw = Math.min(0.1, (now - app.last) / 1000) || 0;
+  app.last = now;
+
+  app.frames++; app.fpsTime += dtRaw;
+  if (app.fpsTime >= 0.5) { app.fps = app.frames / app.fpsTime; app.frames = 0; app.fpsTime = 0; }
+
+  const input = app.controls ? app.controls.update(dtRaw) : null;
+
+  if (app.running && !app.paused) {
+    if (input?.pause) { pauseRace(); }
+    else {
+      stepSimulation(dtRaw, input);
+      updateVisuals(dtRaw);
+    }
+  }
+  render(dtRaw);
+}
+
+function pauseRace() {
+  app.paused = true;
+  app.audio?.suspend?.();
+  showScreen('pause');
+}
+
+function stepSimulation(dtRaw, input) {
+  const race = app.race;
+  if (!race) return;
+  const world = { weather: race.weather, altitude: app.circuit?.ambience?.altitude || 0 };
+
+  // ---- player input -> car ----
+  const p = app.player;
+  if (p && input) {
+    const racing = race.state === 'racing';
+    p.input.steer = input.steer;
+    p.throttle = racing ? input.throttle : 0;
+    p.brake = racing ? input.brake : 1;
+    p.input.throttle = p.throttle;
+    p.input.brake = p.brake;
+    p.input.drsRequest = input.drs;
+    if (input.ers) p.ers.mode = 3; else p.ers.mode = 1;
+    if (p.aids.autoGear) p.autoGear(dtRaw);
+    else { if (input.shiftUp) p.shift(1); if (input.shiftDown) p.shift(-1); }
+    if (input.camera) {
+      const m = app.engine.cycleMode();
+      settings.camera = m; saveSettings();
+      app.hud?.setCameraMode?.(m);
+      app.audio?.playUI?.('click');
+    }
+    if (input.pit) p.input.pitRequest = !p.input.pitRequest;
+    if (input.reset && p.speed < 12) {
+      const s = p.lapDistance;
+      p.reset(s, app.track.racingLine(s), null);
+    }
+    app.controls.updateWheelVisual();
+  }
+
+  // ---- AI ----
+  const aiCtx = { cars: app.cars, weather: race.weather, race, playerPace: race.playerPace };
+  for (const ai of app.ais) {
+    try { ai.update(dtRaw, aiCtx); } catch (err) { /* one bad driver must not stop the race */ }
+  }
+
+  // ---- fixed-step physics ----
+  app.accumulator += dtRaw;
+  let steps = 0;
+  while (app.accumulator >= PHYS_DT && steps < 6) {
+    for (const car of app.cars) {
+      if (car.retired) { car.throttle = 0; car.brake = 1; }
+      car.step(PHYS_DT, world);
+    }
+    app.accumulator -= PHYS_DT;
+    steps++;
+  }
+  if (steps === 6) app.accumulator = 0;   // don't spiral on a slow frame
+
+  try { race.update(dtRaw); } catch (err) { console.warn('[apex] race director', err); }
+
+  if (race.state === 'finished' && app.screen === 'race') {
+    app.running = false;
+    showScreen('results', buildResults());
+  }
+}
+
+function buildResults() {
+  const rows = app.race.classification.map((e) => ({
+    position: e.position,
+    driver: e.car.driver.name,
+    short: e.car.driver.short,
+    number: e.car.driver.num,
+    team: e.car.team.name,
+    color: e.car.team.colors.primary,
+    time: e.finished ? fmt(e.finishTime - app.race.startedAt) : (e.retired ? 'DNF' : '—'),
+    gap: e.position === 1 ? '' : (isFinite(e.gapToLeader) ? `+${e.gapToLeader.toFixed(3)}` : ''),
+    bestLap: isFinite(e.bestLap) ? fmt(e.bestLap) : '—',
+    tyres: e.tyresUsed.map((t) => TYRE_COMPOUNDS[t]?.short || '?').join(' '),
+    points: e.points || 0,
+    isPlayer: e.car.isPlayer,
+    fastest: app.race.fastestLap.car === e.car,
+  }));
+  return { rows, fastestLap: app.race.fastestLap, circuit: app.circuit };
+}
+
+// ---------------------------------------------------------------- visuals
+function updateVisuals(dt) {
+  const race = app.race, engine = app.engine, cam = engine.camera;
+  const player = app.player;
+  const w = race.weather;
+
+  // sky + lighting follow the player so shadows stay tight
+  try { app.sky?.update?.(w, dt, player ? player.position : cam.position); } catch {}
+  if (engine.scene.fog && app.sky?.getFogColor) {
+    const c = app.sky.getFogColor();
+    if (c) engine.scene.fog.color.copy(c);
+  }
+  try { app.world?.setWetness?.(w.trackWetness); } catch {}
+  try { app.world?.update?.(dt, cam); } catch {}
+  try { app.weather?.update?.(w, app.cars, cam, dt); } catch {}
+
+  // car models
+  for (let i = 0; i < app.cars.length; i++) {
+    const car = app.cars[i], model = app.models[i];
+    if (!model) continue;
+    model.group.position.copy(car.position);
+    model.group.quaternion.copy(car.quaternion);
+    try { model.update?.(car, dt); } catch {}
+    try { model.driverFigure?.update?.(car, dt); model.driverFigure?.setSteer?.(car.steerAngle * 3.2); } catch {}
+    if (model.setLOD) {
+      const d = model.group.position.distanceTo(cam.position);
+      try { model.setLOD(d < 25 ? 0 : d < 80 ? 1 : 2); } catch {}
+    }
+  }
+
+  // particle emission driven by real tyre state
+  if (app.particles) {
+    for (const car of app.cars) {
+      for (const wheel of car.wheels) {
+        if (!wheel.contact) continue;
+        const slip = wheel.slipSpeed;
+        if ((wheel.lockedUp || wheel.spinning) && slip > 5) {
+          _tmpV.copy(car.velocity).multiplyScalar(0.25);
+          try { app.particles.emitTyreSmoke(wheel.contactPoint, _tmpV, Math.min(1, slip / 26), w.trackWetness); } catch {}
+        }
+        if (w.trackWetness > 0.12 && car.speed > 12 && !wheel.front) {
+          _tmpV.copy(car.velocity).multiplyScalar(-0.20);
+          try { app.particles.emitSpray(wheel.contactPoint, _tmpV, w.trackWetness * Math.min(1, car.speed / 55)); } catch {}
+        }
+        if (wheel.surface === 'grass' || wheel.surface === 'gravel') {
+          _tmpV.copy(car.velocity).multiplyScalar(-0.3);
+          try {
+            if (wheel.surface === 'grass') app.particles.emitGrass(wheel.contactPoint, _tmpV, Math.min(1, car.speed / 30));
+            else app.particles.emitDust(wheel.contactPoint, _tmpV, Math.min(1, car.speed / 30), wheel.surface);
+          } catch {}
+        }
+      }
+      if (car.bottomedOut > 0.15 && car.speed > 25) {
+        _tmpV.copy(car.velocity).multiplyScalar(-0.4);
+        try { app.particles.emitSparks(car.position, _tmpV, car.bottomedOut); } catch {}
+      }
+    }
+    try { app.particles.update(dt, cam); } catch {}
+  }
+
+  // camera
+  if (player) {
+    engine.rig.lookBack = app.controls?.state.look || 0;
+    if (player.lastImpact > 0.02) { engine.rig.shake = Math.max(engine.rig.shake, player.lastImpact); player.lastImpact *= 0.6; }
+    try { engine.updateCamera(dt, player, app.track, { kerb: player.kerbRumble }); } catch {}
+  }
+
+  // post fx
+  if (app.postfx) {
+    const sp = player ? THREE.MathUtils.clamp(player.speed / 92, 0, 1) : 0;
+    try {
+      app.postfx.setSpeedBlur?.(settings.motionBlur ? sp * sp : 0);
+      app.postfx.setChromatic?.(sp * 0.6);
+      if (w.lightning > 0.05) app.postfx.setFlash?.(0xdfe8ff, w.lightning);
+      if (player?.lastImpact > 0.05) app.postfx.setImpact?.(player.lastImpact);
+    } catch {}
+  }
+
+  // audio + hud
+  try {
+    app.audio?.update?.(dt, {
+      player, cars: app.cars, camera: cam, weather: w, race,
+      cameraMode: engine.rig.mode,
+    });
+  } catch {}
+  try {
+    app.hud?.update?.(dt, {
+      player, cars: app.cars, race, track: app.track, weather: w,
+      input: app.controls?.state, quality: engine.quality, fps: app.fps,
+      entry: app.race.entry(player),
+    });
+  } catch {}
+  if (app.world?.startLights) {
+    try { race.lights > 0 ? app.world.startLights.set(race.lights) : app.world.startLights.off(); } catch {}
+  }
+}
+
+function render(dt) {
+  const engine = app.engine;
+  if (!engine) return;
+  if (app.postfx && app.postfx.enabled !== false) {
+    try { app.postfx.render(dt); return; } catch (err) { app.postfx = null; }
+  }
+  engine.renderer.render(engine.scene, engine.camera);
+}
+
+// ---------------------------------------------------------------- go
+boot().catch((err) => {
+  console.error('[apex] boot failed', err);
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;inset:0;display:grid;place-items:center;background:#05070c;color:#fff;font:600 15px/1.6 system-ui,sans-serif;padding:32px;text-align:center;z-index:999';
+  el.innerHTML = `<div><div style="font-size:26px;letter-spacing:.25em;margin-bottom:14px">APEX F1</div>
+    <div style="opacity:.75;max-width:460px">This browser could not start the game.<br>${String(err && err.message || err)}</div>
+    <button onclick="location.reload()" style="margin-top:22px;padding:12px 26px;background:#ff2d55;color:#fff;border:0;border-radius:8px;font:inherit;cursor:pointer">Reload</button></div>`;
+  document.body.appendChild(el);
+});

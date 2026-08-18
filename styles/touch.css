@@ -1,0 +1,69 @@
+/* APEX F1 — on-screen touch controls */
+.apex-touch{
+  position:fixed; inset:0; z-index:60;
+  pointer-events:none; touch-action:none; -webkit-user-select:none; user-select:none;
+  -webkit-tap-highlight-color:transparent;
+  font:600 11px/1 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  letter-spacing:.14em;
+}
+.apex-touch>*{pointer-events:auto}
+.apex-touch [data-zone]{
+  position:absolute; display:flex; align-items:center; justify-content:center;
+  color:#fff; text-align:center;
+  border-radius:16px; transition:background .12s ease, transform .12s ease, border-color .12s ease;
+}
+/* steering: left half, relative drag */
+.tc-steer{
+  left:0; bottom:0; width:46vw; height:56vh;
+  background:linear-gradient(90deg,rgba(255,255,255,.045),transparent);
+  border-radius:0 28px 0 0;
+}
+.tc-steer-hint{
+  position:absolute; bottom:calc(12px + env(safe-area-inset-bottom)); left:20px;
+  opacity:.35; font-size:10px;
+}
+.tc-wheel{
+  width:min(30vw,150px); aspect-ratio:1; border-radius:50%;
+  border:3px solid rgba(255,255,255,.20);
+  box-shadow:0 0 26px rgba(0,0,0,.5), inset 0 0 22px rgba(255,255,255,.05);
+  transition:transform .05s linear; position:relative;
+  background:radial-gradient(circle at 50% 40%,rgba(255,255,255,.07),transparent 62%);
+}
+.tc-wheel-inner{position:absolute; inset:22%; border-radius:50%; border:2px solid rgba(255,255,255,.10)}
+.tc-wheel-mark{
+  position:absolute; top:6px; left:50%; width:4px; height:16px; margin-left:-2px;
+  background:var(--accent,#ff2d55); border-radius:2px; box-shadow:0 0 10px var(--accent,#ff2d55);
+}
+/* pedals: right side */
+.tc-pedals{position:absolute; right:0; bottom:0; display:flex; gap:12px;
+  padding:0 calc(16px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) 0}
+.tc-btn{
+  position:relative !important; width:min(24vw,116px); height:min(24vw,116px);
+  border:2px solid rgba(255,255,255,.16); backdrop-filter:blur(8px);
+  font-size:12px; font-weight:700;
+}
+.tc-throttle{background:rgba(20,190,110,.16); border-color:rgba(40,220,130,.34)}
+.tc-throttle.on{background:rgba(20,220,120,.42); transform:scale(.95); border-color:#2ade88}
+.tc-brake{background:rgba(220,40,60,.16); border-color:rgba(240,70,90,.34)}
+.tc-brake.on{background:rgba(240,50,70,.46); transform:scale(.95); border-color:#ff4d68}
+/* aux buttons */
+.tc-aux{position:absolute; right:0; top:0; display:flex; flex-direction:column; gap:8px;
+  padding:calc(10px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right)) 0 0}
+.tc-shifts{position:absolute; left:0; top:0; display:flex; gap:8px;
+  padding:calc(10px + env(safe-area-inset-top)) 0 0 calc(10px + env(safe-area-inset-left))}
+.tc-mini{
+  position:relative !important; width:56px; height:42px;
+  background:rgba(10,14,22,.55); border:1px solid rgba(255,255,255,.14);
+  backdrop-filter:blur(8px); font-size:10px; border-radius:10px;
+}
+.tc-mini.on{background:var(--accent,#ff2d55); border-color:#fff; transform:scale(.94)}
+.tc-shift{width:52px; height:52px; font-size:20px; font-weight:800}
+/* layout variants */
+.tc-layout-wheel .tc-steer{display:flex; align-items:flex-end; justify-content:center;
+  padding-bottom:calc(18px + env(safe-area-inset-bottom))}
+.apex-touch:not(.tc-layout-wheel) .tc-wheel{
+  position:absolute; left:calc(18px + env(safe-area-inset-left));
+  bottom:calc(18px + env(safe-area-inset-bottom)); opacity:.55;
+}
+@media (min-width:900px) and (hover:hover){ .apex-touch{display:none} }
+@media (prefers-reduced-motion:reduce){ .apex-touch [data-zone]{transition:none} }

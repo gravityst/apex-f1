@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#05070c">
+<meta name="description" content="APEX F1 — a hyper-realistic browser Formula 1 racing simulator with adaptive AI, dynamic weather and real vehicle physics.">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>APEX F1</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%2305070c'/><path d='M22 74 L50 22 L78 74 L64 74 L50 48 L36 74 Z' fill='%23ff2d55'/></svg>">
+<link rel="stylesheet" href="styles/ui.css">
+<link rel="stylesheet" href="styles/hud.css">
+<link rel="stylesheet" href="styles/touch.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/build/three.module.js",
+    "three/addons/": "./vendor/three/addons/"
+  }
+}
+</script>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="hud-root" class="hud-root" aria-hidden="true"></div>
+  <div id="touch-root"></div>
+  <div id="menu-root"></div>
+  <noscript><div class="noscript">APEX F1 needs JavaScript and WebGL2 to run.</div></noscript>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
