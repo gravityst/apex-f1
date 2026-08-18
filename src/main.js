@@ -125,6 +125,7 @@ function showScreen(name, data) {
   if (app.hud) { try { app.hud.setVisible(name === 'race'); } catch {} }
   if (app.controls) app.controls.setTouchVisible(name === 'race' && app.controls.isTouch);
   hudRoot.setAttribute('aria-hidden', name === 'race' ? 'false' : 'true');
+  document.body.classList.toggle('in-race', name === 'race');
 }
 
 function wireMenus() {

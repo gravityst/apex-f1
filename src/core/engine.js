@@ -44,14 +44,14 @@ export function createEngine(canvas, opts = {}) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality.pixelRatio));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.98;
+  renderer.toneMappingExposure = 0.92;
   renderer.shadowMap.enabled = quality.shadows;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = true;
   renderer.info.autoReset = true;
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0x9fb6cc, 380, quality.drawDistance);
+  scene.fog = new THREE.Fog(0x9fb6cc, 620, quality.drawDistance);
 
   const camera = new THREE.PerspectiveCamera(62, 1, 0.22, quality.drawDistance * 1.6);
   camera.position.set(0, 4, -12);
