@@ -381,7 +381,13 @@ export function createRace(opts) {
       if (e.retired) continue;
       const limit = track.wallAt(c.lapDistance);
       const over = Math.abs(c.lateral) - limit;
-      if (over > 0) {
+      if (over > 30) {
+        // The barrier is a corridor around the centreline, which cannot contain
+        // a car that has reached the infield of a circuit that loops back on
+        // itself — from there it can wander indefinitely. Put it back.
+        recoverToTrack(c);
+        if (c.isPlayer) race.log('RECOVERED TO TRACK', 'info');
+      } else if (over > 0) {
         const sm = track.sample(c.lapDistance);
         const sign = Math.sign(c.lateral);
         _n.copy(sm.lateral).multiplyScalar(-sign);      // inward normal
