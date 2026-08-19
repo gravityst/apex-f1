@@ -282,7 +282,18 @@ export function createControls(opts = {}) {
   // ---- api ----------------------------------------------------------------
   function setTouchVisible(v) {
     if (v) buildTouchUI();
-    if (touchUI) touchUI.style.display = v ? '' : 'none';
+    if (touchUI) {
+      touchUI.style.display = v ? '' : 'none';
+      touchUI.classList.toggle('tc-auto-gears', !settings.manualGears);
+    }
+    // Drive the layout off a real class rather than a `pointer: coarse` media
+    // query — touch laptops report coarse, some phones report fine, and it is
+    // untestable in a desktop browser emulating a phone.
+    try { document.body.classList.toggle('apex-touch-on', !!v); } catch {}
+  }
+  function setManualGears(on) {
+    settings.manualGears = !!on;
+    if (touchUI) touchUI.classList.toggle('tc-auto-gears', !on);
   }
   function setLayout(l) {
     settings.layout = l;
@@ -306,7 +317,7 @@ export function createControls(opts = {}) {
 
   return {
     state, settings, update, dispose, isTouch,
-    setTouchVisible, setLayout, updateWheelVisual, requestTilt,
+    setTouchVisible, setLayout, updateWheelVisual, requestTilt, setManualGears,
     setSensitivity: (v) => { settings.sensitivity = v; },
     setAssistThrottle: (v) => { settings.assistThrottle = v; },
     get touchElement() { return touchUI; },

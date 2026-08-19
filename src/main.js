@@ -115,6 +115,7 @@ async function boot() {
       assistThrottle: settings.assistThrottle,
     },
   });
+  app.controls.setManualGears(!settings.autoGear);
   if (app.controls.isTouch) { app.controls.setTouchVisible(true); app.controls.setTouchVisible(false); }
 
   await loadModules((p) => { if (app.menus) app.menus.setLoadingProgress(p * 0.5, 'Loading systems'); });
@@ -273,7 +274,11 @@ function applySetting(key, value) {
     case 'touchLayout': app.controls?.setLayout?.(value); break;
     case 'steerSensitivity': app.controls?.setSensitivity?.(value); break;
     case 'assistThrottle': app.controls?.setAssistThrottle?.(value); break;
-    case 'tc': case 'abs': case 'autoGear': case 'stability':
+    case 'autoGear':
+      if (app.player) app.player.aids.autoGear = value;
+      app.controls?.setManualGears?.(!value);
+      break;
+    case 'tc': case 'abs': case 'stability':
       if (app.player) app.player.aids[key] = value;
       break;
     default: break;
@@ -659,12 +664,26 @@ function stepSimulation(dtRaw, input) {
     // Reverse: hold the brake with the car stopped and it backs up, which is
     // what everyone expects S / down-arrow to do once you are stationary.
     if (racing && p.aids.autoGear) {
-      if (p.gear >= 0 && p.speed < 1.4 && input.brake > 0.5) {
+      // Reverse needs a FRESH brake press while already stopped. Engaging it
+      // just because the brake was held through a stop means the pedals swap
+      // under the player mid-corner and the brake starts driving them
+      // backwards — which reads as the brake having stopped working entirely.
+      const stopped = p.speed < 0.9;
+      if (!stopped) { p._revArmed = false; p._revHold = 0; }
+      else if (input.brake <= 0.2) p._revArmed = true;   // released while stopped
+      if (p.gear >= 0 && stopped && p._revArmed && input.brake > 0.5) {
         p._revHold = (p._revHold || 0) + dtRaw;
-        if (p._revHold > 0.5) { p.gear = -1; p._revHold = 0; }
-      } else if (p.gear === -1 && (input.throttle > 0.3 || p.velocity.dot(p.forward) > 1)) {
+        if (p._revHold > 0.25) {
+          p.gear = -1; p._revHold = 0; p._revArmed = false;
+          // Reverse swaps the pedals, so the player must be told it happened —
+          // otherwise the brake silently becomes the accelerator.
+          try { app.hud?.showMessage?.('REVERSE — BRAKE BACKS UP, THROTTLE TO GO FORWARD', 'warn', 2600); } catch {}
+        }
+      }
+      if (p.gear === -1 && (input.throttle > 0.3 || p.velocity.dot(p.forward) > 1.0)) {
         p.gear = 1; p._revHold = 0;
-      } else if (input.brake <= 0.5) p._revHold = 0;
+        try { app.hud?.showMessage?.('FORWARD', 'info', 1000); } catch {}
+      }
     }
     if (p.gear === -1) {
       // In reverse the pedals swap: brake backs you up, throttle stops you.

@@ -95,3 +95,112 @@
   body.in-race .hud-root{display:none}
 }
 @media (prefers-reduced-motion:reduce){ .rotate-hint .rh-phone{animation:none; transform:rotate(-90deg)} }
+
+/* ==========================================================================
+   LANDSCAPE PHONE LAYOUT
+   Measured against the real HUD boxes at 844x390 (its own "short" mode):
+     .apx-tl  x14-151  y14-142     .apx-tc  x339-505 y14-110
+     .apx-tr  x695-830 y14-183     .apx-bc  x289-555 y300-376
+     .apx-side.apx-left  x14-43  y251-376
+     .apx-side.apx-right x668-830 y246-354   <- sat exactly where a thumb goes
+   The HUD is pulled in and scaled down so the controls get the bottom corners,
+   and every control is placed in space the HUD does not occupy.
+   ========================================================================== */
+@media (orientation: landscape) and (max-height: 560px) {
+  body:not(.apex-touch-on) .apex-touch { display: none; }
+  /* --- give the corners back to the player's thumbs --- */
+  body.apex-touch-on .hud-root .apx-tl            { transform: scale(.80); transform-origin: 0 0; }
+  body.apex-touch-on .hud-root .apx-tc            { transform: translateX(-50%) scale(.74); transform-origin: 50% 0; }
+  body.apex-touch-on .hud-root .apx-tr            { transform: scale(.76); transform-origin: 100% 0; }
+  body.apex-touch-on .hud-root .apx-bc            { transform: translateX(-50%) scale(.72); transform-origin: 50% 100%; }
+  body.apex-touch-on .hud-root .apx-side.apx-left { transform: scale(.80); transform-origin: 0 100%; }
+  /* the tyre / fuel block sat on top of the pedals: lift and shrink it */
+  body.apex-touch-on .hud-root .apx-side.apx-right{ transform: scale(.72) translateY(-58px); transform-origin: 100% 0; }
+  body.apex-touch-on .hud-root .apx-status        { opacity: .5; transform: scale(.8); transform-origin: 100% 100%; }
+
+  /* --- steering: the whole lower-left, invisible, drag anywhere --- */
+  body.apex-touch-on .apex-touch .tc-steer {
+    left: 0; bottom: 0; width: 44vw; height: 76vh;
+    background: linear-gradient(90deg, rgba(255,255,255,.03), transparent 70%);
+    border-radius: 0;
+  }
+  body.apex-touch-on .apex-touch .tc-steer-hint { display: none; }
+  /* a small, honest wheel indicator instead of a giant faint circle */
+  body.apex-touch-on .apex-touch:not(.tc-layout-wheel) .tc-wheel {
+    width: 62px; height: 62px; border-width: 2px;
+    left: calc(12px + env(safe-area-inset-left));
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    opacity: .5;
+  }
+  body.apex-touch-on .apex-touch .tc-wheel-mark { height: 11px; top: 4px; }
+
+  /* --- pedals: bottom-right corner, where the right thumb rests --- */
+  body.apex-touch-on .apex-touch .tc-pedals {
+    right: 0; bottom: 0; gap: 10px;
+    padding: 0 calc(10px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) 0;
+  }
+  body.apex-touch-on .apex-touch .tc-btn { width: 88px; height: 88px; font-size: 11px; border-radius: 14px; }
+
+  /* --- DRS / ERS: immediately left of the pedals, same thumb, clear of the
+         gear readout which ends around x531 once scaled --- */
+  body.apex-touch-on .apex-touch .tc-aux {
+    top: auto; transform: none;
+    right: calc(212px + env(safe-area-inset-right));
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    flex-direction: column; gap: 8px; padding: 0;
+  }
+  body.apex-touch-on .apex-touch .tc-aux .tc-mini { width: 74px; height: 40px; font-size: 10px; }
+  /* CAM and PIT are occasional — tuck them along the top, in the gap between
+     the lap-time panel and the minimap */
+  body.apex-touch-on .apex-touch .tc-aux [data-zone="camera"],
+  body.apex-touch-on .apex-touch .tc-aux [data-zone="pit"] {
+    position: fixed !important;
+    top: calc(8px + env(safe-area-inset-top)); bottom: auto;
+    width: 60px; height: 34px;
+  }
+  /* The gap between the position/timing block (ends ~x150) and the lap-time
+     panel (starts ~x339 at 844 wide) is the only clear space along the top. */
+  body.apex-touch-on .apex-touch .tc-aux [data-zone="camera"] {
+    left: calc(23% + env(safe-area-inset-left)); right: auto;
+  }
+  body.apex-touch-on .apex-touch .tc-aux [data-zone="pit"] {
+    left: calc(23% + 66px + env(safe-area-inset-left)); right: auto;
+  }
+
+  /* --- shift paddles: only meaningful with a manual gearbox --- */
+  body.apex-touch-on .apex-touch .tc-shifts {
+    top: auto; transform: none;
+    bottom: calc(106px + env(safe-area-inset-bottom));
+    left: auto; right: calc(10px + env(safe-area-inset-right));
+    flex-direction: row; gap: 8px; padding: 0;
+  }
+  body.apex-touch-on .apex-touch .tc-shift { width: 88px; height: 40px; font-size: 17px; }
+  body.apex-touch-on .apex-touch.tc-auto-gears .tc-shifts { display: none; }
+}
+
+/* Very short screens (small phones in landscape) — pull everything in further.
+   These sizes must stay consistent with the block above, or they silently
+   override it and push the controls back into each other. */
+@media (orientation: landscape) and (max-height: 400px) {
+  body.apex-touch-on .apex-touch .tc-btn { width: 78px; height: 78px; }
+  /* keep DRS/ERS clear of the (now narrower) pedal cluster */
+  body.apex-touch-on .apex-touch .tc-aux { right: calc(196px + env(safe-area-inset-right)); }
+  body.apex-touch-on .apex-touch .tc-aux .tc-mini { width: 64px; height: 36px; }
+  body.apex-touch-on .apex-touch .tc-aux [data-zone="camera"],
+  body.apex-touch-on .apex-touch .tc-aux [data-zone="pit"] { width: 58px; height: 32px; }
+}
+
+/* CAM and PIT live in the only clear band along the top: between the timing
+   block (ends ~x187) and the lap-time panel (starts ~x325) at 844 wide. */
+@media (orientation: landscape) and (max-height: 560px) {
+  body.apex-touch-on .apex-touch .tc-aux [data-zone="camera"] {
+    left: calc(23% + env(safe-area-inset-left)) !important; right: auto !important;
+    width: 58px; height: 32px;
+  }
+  body.apex-touch-on .apex-touch .tc-aux [data-zone="pit"] {
+    left: calc(23% + 64px + env(safe-area-inset-left)) !important; right: auto !important;
+    width: 58px; height: 32px;
+  }
+  /* the FPS / quality readout sits underneath the pedals — not worth the space */
+  body.apex-touch-on .hud-root .apx-status { display: none; }
+}
