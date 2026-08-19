@@ -391,6 +391,7 @@ async function startRace(cfg) {
     } catch (err) { console.warn('[apex] track world failed', err); app.world = null; }
   }
   if (!app.world) buildFallbackWorld(scene);
+  polishWorldLook(app.world);
   try {
     if (app.pitLane) { app.pitLane.dispose(); app.pitLane = null; }
     app.pitLane = buildPitLane(scene, app.track, circuit);
@@ -526,6 +527,208 @@ function nextFrame() {
     requestAnimationFrame(finish);
     setTimeout(finish, 40);
   });
+}
+
+/**
+ * Trackside look pass.
+ *
+ * The run-off materials tile a small texture over hundreds of metres, so at
+ * race distances the grass and gravel read as flat sheets of colour. This adds
+ * multi-scale variation in WORLD space — independent of whatever UV convention
+ * the geometry uses — plus mown stripes on the grass, which is what actually
+ * makes a verge look like a real one on television.
+ */
+const GROUND_NOISE_GLSL = `
+float apxH21(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+float apxVN(vec2 p){
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(apxH21(i), apxH21(i + vec2(1.0, 0.0)), f.x),
+             mix(apxH21(i + vec2(0.0, 1.0)), apxH21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float apxFBM(vec2 p){
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 5; i++) { s += a * apxVN(p); p *= 2.03; a *= 0.5; }
+  return s;
+}
+`;
+
+function groundDetail(mat, opts) {
+  if (!mat || mat.userData.__apxDetail) return;
+  mat.userData.__apxDetail = true;
+  const o = Object.assign({ large: 0.010, small: 0.13, amount: 0.42, stripes: 0, tint: [1, 1, 1] }, opts || {});
+  const prev = mat.onBeforeCompile;
+  mat.onBeforeCompile = (sh) => {
+    if (prev) { try { prev(sh); } catch {} }
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vApxW;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvApxW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vApxW;\n' + GROUND_NOISE_GLSL)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+      {
+        vec2 wp = vApxW.xz;
+        float nBig = apxFBM(wp * ${o.large.toFixed(4)});
+        float nSml = apxFBM(wp * ${o.small.toFixed(4)});
+        float v = mix(nBig, nSml, 0.35);
+        diffuseColor.rgb *= (1.0 - ${o.amount.toFixed(3)} * 0.5) + ${o.amount.toFixed(3)} * v;
+        diffuseColor.rgb *= vec3(${o.tint[0].toFixed(3)}, ${o.tint[1].toFixed(3)}, ${o.tint[2].toFixed(3)});
+        ${o.stripes > 0 ? `
+        float mow = 0.5 + 0.5 * sin(wp.x * 0.052 + wp.z * 0.031);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.10, 1.05, 0.86), mow * ${o.stripes.toFixed(3)});
+        ` : ''}
+      }`);
+  };
+  mat.needsUpdate = true;
+}
+
+function polishWorldLook(world) {
+  const m = world && world.materials;
+  if (!m) return;
+  try {
+    groundDetail(m.grass, { large: 0.009, small: 0.16, amount: 0.52, stripes: 0.30, tint: [0.94, 1.0, 0.86] });
+    groundDetail(m.gravel, { large: 0.020, small: 0.30, amount: 0.46, tint: [1.0, 0.97, 0.90] });
+    groundDetail(m.astro, { large: 0.030, small: 0.40, amount: 0.28, tint: [0.90, 1.0, 0.90] });
+    groundDetail(m.concrete, { large: 0.012, small: 0.20, amount: 0.24 });
+  } catch (err) { console.warn('[apex] ground detail skipped', err); }
+}
+
+/**
+ * Build a visible pit lane.
+ *
+ * The track geometry module only paints entry/exit guide lines, so without this
+ * the pit lane is an invisible strip of grass. Surface, markings, separating
+ * wall and garages are all generated here.
+ */
+function buildPitLane(scene, track, circuit) {
+  const group = new THREE.Group();
+  const pit = track.pit;
+  const span = (pit.exitS - pit.entryS + track.length) % track.length;
+  const HALF = 4.0;
+  const sideSign = pit.side === 'right' ? 1 : -1;   // CONSTANT: never taken from
+                                                    // the ramping lane offset
+  // Only build where the lane has actually separated from the racing surface;
+  // the entry/exit ramps pass close to the track and anything drawn there
+  // (especially the wall) ends up standing on the circuit itself.
+  const CLEAR = HALF + 1.0;
+  const isClear = (f) => {
+    const s2 = pit.entryS + span * f;
+    return Math.abs(pit.lane(s2)) >= track.sample(s2).width + CLEAR;
+  };
+  let f0 = -1, f1 = -1;
+  for (let i = 0; i <= 400; i++) { const f = i / 400; if (isClear(f)) { f0 = f; break; } }
+  for (let i = 400; i >= 0; i--) { const f = i / 400; if (isClear(f)) { f1 = f; break; } }
+  if (f0 < 0 || f1 <= f0) return { group, dispose() {} };
+
+  const STEPS = Math.max(24, Math.round((span * (f1 - f0)) / 6));
+  const pos = [], uv = [], idx = [], wallPos = [], wallIdx = [];
+  for (let i = 0; i <= STEPS; i++) {
+    const f = f0 + (f1 - f0) * (i / STEPS);
+    const s2 = pit.entryS + span * f;
+    const sm = track.sample(s2);
+    const off = pit.lane(s2);
+    const cx = sm.pos.x + sm.lateral.x * off;
+    const cy = sm.pos.y + sm.lateral.y * off + 0.015;
+    const cz = sm.pos.z + sm.lateral.z * off;
+    for (let j = -1; j <= 1; j += 2) {
+      pos.push(cx + sm.lateral.x * HALF * j, cy, cz + sm.lateral.z * HALF * j);
+      uv.push((j + 1) * 0.5, (span * f) / 26);
+    }
+    // wall sits a fixed distance outside the TRACK edge, not off the lane centre
+    const wLat = sideSign * (sm.width + 2.0);
+    wallPos.push(sm.pos.x + sm.lateral.x * wLat, sm.pos.y + sm.lateral.y * wLat, sm.pos.z + sm.lateral.z * wLat,
+                 sm.pos.x + sm.lateral.x * wLat, sm.pos.y + sm.lateral.y * wLat + 1.05, sm.pos.z + sm.lateral.z * wLat);
+  }
+  for (let i = 0; i < STEPS; i++) {
+    const a = i * 2;
+    idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    wallIdx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3, a + 1, a + 2, a, a + 3, a + 2, a + 1);
+  }
+
+  // --- pit lane surface: asphalt with the fast-lane and box lines painted on
+  const pc = document.createElement('canvas'); pc.width = 256; pc.height = 512;
+  const px = pc.getContext('2d');
+  px.fillStyle = '#33363b'; px.fillRect(0, 0, 256, 512);
+  for (let i = 0; i < 9000; i++) {
+    const v = 40 + Math.random() * 34;
+    px.fillStyle = `rgba(${v},${v + 2},${v + 5},0.32)`;
+    px.fillRect(Math.random() * 256, Math.random() * 512, 2, 2);
+  }
+  px.fillStyle = '#e9e9e6'; px.fillRect(10, 0, 7, 512); px.fillRect(239, 0, 7, 512);
+  px.fillStyle = '#e8c23a'; px.fillRect(96, 0, 5, 512);
+  px.fillStyle = '#e9e9e6';
+  for (let b = 0; b < 4; b++) {
+    const y = 40 + b * 128;
+    px.fillRect(150, y, 80, 5); px.fillRect(150, y + 96, 80, 5); px.fillRect(150, y, 5, 101);
+  }
+  const laneTex = new THREE.CanvasTexture(pc);
+  laneTex.wrapS = laneTex.wrapT = THREE.RepeatWrapping;
+  laneTex.colorSpace = THREE.SRGBColorSpace;
+  laneTex.anisotropy = 8;
+  const laneMat = new THREE.MeshStandardMaterial({ map: laneTex, roughness: 0.9 });
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  const lane = new THREE.Mesh(g, laneMat);
+  lane.receiveShadow = true;
+  group.add(lane);
+
+  // --- separating wall, painted with a sponsor band
+  const wc = document.createElement('canvas'); wc.width = 128; wc.height = 64;
+  const wx = wc.getContext('2d');
+  wx.fillStyle = '#dededa'; wx.fillRect(0, 0, 128, 64);
+  wx.fillStyle = '#c8102e'; wx.fillRect(0, 52, 128, 12);
+  wx.fillStyle = '#1c2733'; wx.fillRect(8, 12, 112, 28);
+  wx.fillStyle = '#e9edf2'; wx.font = 'bold 17px sans-serif'; wx.textAlign = 'center';
+  wx.fillText('APEX', 64, 33);
+  const wallTex = new THREE.CanvasTexture(wc);
+  wallTex.wrapS = wallTex.wrapT = THREE.RepeatWrapping;
+  wallTex.repeat.set(Math.max(6, Math.round(span * (f1 - f0) / 9)), 1);
+  wallTex.colorSpace = THREE.SRGBColorSpace;
+  const wallMat = new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.78, side: THREE.DoubleSide });
+  const wg = new THREE.BufferGeometry();
+  wg.setAttribute('position', new THREE.Float32BufferAttribute(wallPos, 3));
+  wg.setIndex(wallIdx); wg.computeVertexNormals();
+  const wall = new THREE.Mesh(wg, wallMat);
+  wall.castShadow = true; wall.receiveShadow = true;
+  group.add(wall);
+
+  // --- garages set back on the far side of the lane
+  const boxGeo = new THREE.BoxGeometry(7.5, 4.2, 9);
+  const mats = [];
+  for (let i = 0; i < 10; i++) {
+    const f = f0 + (f1 - f0) * (0.10 + i * 0.085);
+    if (f > f1) break;
+    const s2 = pit.entryS + span * f;
+    const sm = track.sample(s2);
+    const off = pit.lane(s2);
+    const t = TEAMS[i % TEAMS.length];
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(t.colors.primary).multiplyScalar(0.55), roughness: 0.85,
+    });
+    mats.push(mat);
+    const box = new THREE.Mesh(boxGeo, mat);
+    const lat = off + sideSign * (HALF + 5.0);
+    box.position.set(sm.pos.x + sm.lateral.x * lat, sm.pos.y + 2.1, sm.pos.z + sm.lateral.z * lat);
+    box.rotation.y = Math.atan2(sm.tangent.x, sm.tangent.z);
+    box.castShadow = true; box.receiveShadow = true;
+    group.add(box);
+  }
+
+  group.matrixAutoUpdate = false;
+  group.updateMatrix();
+  scene.add(group);
+  return {
+    group,
+    dispose() {
+      g.dispose(); wg.dispose(); boxGeo.dispose();
+      laneTex.dispose(); wallTex.dispose(); laneMat.dispose(); wallMat.dispose();
+      for (const m of mats) m.dispose();
+      scene.remove(group);
+    },
+  };
 }
 
 // ---------------------------------------------------------------- fallbacks

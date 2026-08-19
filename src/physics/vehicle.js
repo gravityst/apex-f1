@@ -163,7 +163,7 @@ export function createVehicle(opts = {}) {
       omega: 0, spinAngle: 0, steerAngle: 0,
       susLength: cfg.restLength, susVel: 0, compression: 0,
       contact: false, load: 0, surface: 'asphalt', surfaceGrip: 1,
-      slipRatio: 0, slipAngle: 0, slipRelax: 0, absCut: 0, absActive: false,
+      slipRatio: 0, slipAngle: 0, slipRelax: 0, absCut: 0, absActive: false, surfLift: 0,
       fx: 0, fy: 0,
       temp: 80, coreTemp: 78, wear: 0,
       lockedUp: false, spinning: false,
@@ -376,9 +376,15 @@ export function createVehicle(opts = {}) {
         dist = _e.dot(_d) / denom;
       }
       const surf = track.surfaceAt(pr.s, pr.lateral);
-      // kerbs and gravel physically sit at a different height
-      const surfLift = surf.type === 'kerb' ? 0.045 : surf.type === 'gravel' ? -0.030 : 0;
-      dist -= surfLift;
+      // Kerbs and gravel sit at a different height, but applying that as an
+      // instantaneous step is catastrophic: crossing the boundary at 70 m/s
+      // moves the ground 45 mm within a single substep, which drives the
+      // damper velocity to its clamp and fires the car metres into the air.
+      // Ramp the lift instead — over ~80 ms, which is a few metres of travel.
+      const liftTarget = surf.type === 'kerb' ? 0.045 : surf.type === 'gravel' ? -0.030 : 0;
+      if (w.surfLift === undefined) w.surfLift = liftTarget;
+      w.surfLift += (liftTarget - w.surfLift) * Math.min(1, dt * 12);
+      dist -= w.surfLift;
 
       const newLen = THREE.MathUtils.clamp(dist - w.radius, 0.0, cfg.restLength + cfg.travel);
       w.contactNormal.copy(_d);
@@ -560,15 +566,11 @@ export function createVehicle(opts = {}) {
         mu *= compound.grip;
         mu *= w.surfaceGrip;
 
-        // thermal window — cold tyres hurt more than slightly-hot ones
-        const tOpt = compound.optimalTemp, tWin = compound.tempWindow;
-        const tErr = (w.temp - tOpt) / tWin;
-        const k = tErr < 0 ? 0.20 : 0.13;
-        const thermal = THREE.MathUtils.clamp(1 - tErr * tErr * k, 0.72, 1.025);
-        mu *= thermal;
-
-        // wear — a dead tyre loses about a quarter of its grip
-        mu *= 1 - w.wear * w.wear * 0.18 - w.wear * 0.07;
+        // Temperature and wear are tracked for the HUD but deliberately have
+        // only a light touch on grip. Letting them drive it produced races that
+        // fell apart on their own — tyres cooking, grip vanishing, cars
+        // spinning off — for reasons a player could neither see nor control.
+        mu *= 1 - Math.min(0.10, w.wear * 0.10);
 
         // wet
         if (wetness > 0.01) {
@@ -667,9 +669,7 @@ export function createVehicle(opts = {}) {
       w.coreTemp += (w.temp - w.coreTemp) * dt * 0.30;
 
       const overheat = Math.max(0, w.temp - (compound.optimalTemp + compound.tempWindow));
-      const wearRate = (slipPower * 1.6e-8
-                      + Math.abs(Fy * vLat) * 0.9e-8
-                      + overheat * 2.2e-6) * compound.wearRate;
+      const wearRate = (slipPower * 0.9e-8 + Math.abs(Fy * vLat) * 0.5e-8) * compound.wearRate;
       w.wear = Math.min(1, w.wear + wearRate * dt);
     }
     car.ers.harvest = ersHarvest;
@@ -726,9 +726,53 @@ export function createVehicle(opts = {}) {
     car.mass = cfg.mass + car.fuel;
   }
 
+  // ---- keep the car planted ----------------------------------------------
+  // An F1 car does not fly or tumble. Rather than hoping the force model never
+  // misbehaves, the car is constrained to a sane band above the road and to a
+  // sane attitude relative to it. This removes the entire class of "thrown into
+  // the air" and "rolled over" failures outright.
+  const _roadUp = new THREE.Vector3();
+  const _tiltAxis = new THREE.Vector3();
+  const _tiltQ = new THREE.Quaternion();
+  const MAX_RIDE = 0.55;      // m above the road surface
+  const MIN_RIDE = 0.06;
+  const MAX_TILT = 0.26;      // ~15 deg away from the road normal
+
+  function constrainToRoad(dt) {
+    const pr = track.project(car.position, car._hintS);
+    const sm = track.sample(pr.s);
+    const roadY = sm.pos.y + sm.lateral.y * pr.lateral;
+    const ride = car.position.y - roadY;
+    if (ride > MAX_RIDE) {
+      car.position.y = roadY + MAX_RIDE;
+      if (car.velocity.y > 0) car.velocity.y = 0;
+    } else if (ride < MIN_RIDE) {
+      car.position.y = roadY + MIN_RIDE;
+      if (car.velocity.y < 0) car.velocity.y *= -0.05;
+    }
+    if (car.velocity.y > 4) car.velocity.y = 4;
+    if (car.velocity.y < -14) car.velocity.y = -14;
+
+    // Limit tilt away from the road normal so the car can never barrel-roll.
+    _roadUp.copy(sm.normal);
+    const d = THREE.MathUtils.clamp(car.up.dot(_roadUp), -1, 1);
+    const tilt = Math.acos(d);
+    if (tilt > MAX_TILT) {
+      _tiltAxis.crossVectors(car.up, _roadUp);
+      if (_tiltAxis.lengthSq() > 1e-8) {
+        _tiltAxis.normalize();
+        _tiltQ.setFromAxisAngle(_tiltAxis, Math.min(tilt - MAX_TILT, dt * 9));
+        car.quaternion.premultiply(_tiltQ).normalize();
+        car.angularVelocity.multiplyScalar(0.6);
+        refreshBasis();
+      }
+    }
+  }
+
   // ---- per-frame bookkeeping ---------------------------------------------
   function postStep(dt, world) {
     refreshBasis();
+    constrainToRoad(dt);
     const pr = track.project(car.position, car._hintS);
     car.prevLapDistance = car.lapDistance;
     const prev = car.lapDistance;
@@ -780,14 +824,15 @@ export function createVehicle(opts = {}) {
   function autoGear(dt) {
     if (!car.aids.autoGear || car.shiftTimer > 0) return;
     if (car.gear < 0) return;   // reverse is selected deliberately; leave it
-    const ratio = car.gear > 0 ? cfg.gearRatios[car.gear - 1] : 0;
     if (car.gear === 0 && car.throttle > 0.1) { car.gear = 1; return; }
-    if (car.gear > 0 && car.rpm > cfg.shiftRpm && car.gear < cfg.gearRatios.length) shift(1);
-    else if (car.gear > 1) {
-      const lower = cfg.gearRatios[car.gear - 2];
-      const projected = car.rpm * (lower / ratio);
-      if (projected < cfg.shiftRpm * 0.80 && car.rpm < cfg.shiftRpm * 0.62) shift(-1);
-    }
+    if (car.gear <= 0) return;
+    // Shift on ROAD SPEED, not engine rpm. Under wheelspin the rpm pegs the
+    // rev limiter and the gearbox climbs to 8th while the car sits still,
+    // leaving it with no torque and unable to move at all.
+    const vLong = Math.abs(car.velocity.dot(car.forward));
+    const rpmFor = (gear) => (vLong / cfg.wheelRadiusR) * cfg.gearRatios[gear - 1] * 60 / (2 * Math.PI);
+    if (car.gear < cfg.gearRatios.length && rpmFor(car.gear) > cfg.shiftRpm) shift(1);
+    else if (car.gear > 1 && rpmFor(car.gear - 1) < cfg.shiftRpm * 0.86) shift(-1);
   }
 
   /** Register a collision impulse (from race.js). */

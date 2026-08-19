@@ -1622,8 +1622,9 @@ export function createHUD(root, opts) {
     updateDRS(ctx, player, race);
 
     // ---- pit limiter --------------------------------------------------------
-    const lim = player && (player.pitLimiter === true || player.limiter === true ||
-      (player.inPitLane === true && Math.abs(num(player.speed, 0)) > 1));
+    // Only a real pit limiter lights this pill. player.limiter is the REV
+    // limiter, and wiring it here made the badge glow permanently.
+    const lim = !!(player && player.pitLimiter === true);
     setCls(limPill, 'apx-lim' + (lim ? ' is-on' : ''));
   }
 
