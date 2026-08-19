@@ -50,8 +50,8 @@ export const CHASSIS = {
   brakeTorqueMax: 21000,     // Nm total
   brakeBias: 0.575,
   // steering
-  maxSteer: 0.335,           // rad at the roadwheel (~19.2 deg)
-  steerSpeedFalloff: 0.62,
+  maxSteer: 0.370,           // rad at the roadwheel (~21.2 deg)
+  steerSpeedFalloff: 0.42,
   // driveline
   gearRatios: [13.50, 11.75, 10.22, 8.89, 7.74, 6.73, 5.86, 5.10],
   reverseRatio: -11.0,
@@ -280,9 +280,11 @@ export function createVehicle(opts = {}) {
     const speed = car.velocity.length();
     car.speed = speed;
     const speedFactor = 1 / (1 + Math.pow(speed / 42, 1.7) * cfg.steerSpeedFalloff);
-    const targetSteer = car.input.steer * cfg.maxSteer * (0.30 + 0.70 * speedFactor);
+    // Keep a healthy floor of steering authority at speed. The old 0.30 floor
+    // left barely 11 deg of lock at 250 km/h, which feels numb and unresponsive.
+    const targetSteer = car.input.steer * cfg.maxSteer * (0.46 + 0.54 * speedFactor);
     // finite steering rate — you cannot snap the wheel instantly
-    const rate = 5.4 + 5.0 * (1 - Math.min(1, speed / 60));
+    const rate = 8.5 + 6.0 * (1 - Math.min(1, speed / 60));
     car.steerAngle += THREE.MathUtils.clamp(targetSteer - car.steerAngle, -rate * dt, rate * dt);
     car.steer = car.steerAngle / cfg.maxSteer;
     // Ackermann

@@ -43,8 +43,8 @@ export function createControls(opts = {}) {
     layout: 'drag',            // 'drag' | 'wheel' | 'tilt'
     sensitivity: 1.0,
     assistThrottle: false,
-    steerSpeed: 3.4,
-    steerReturn: 4.6,
+    steerSpeed: 6.2,
+    steerReturn: 9.0,
     deadzone: 0.10,
     invertTilt: false,
   };

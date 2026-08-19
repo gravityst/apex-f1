@@ -85,6 +85,25 @@ function qualityName() {
 async function boot() {
   app.engine = createEngine(canvas, { quality: qualityName(), resScale: settings.resolutionScale });
   resize();
+
+  // A lost WebGL context is the classic "everything vanished into a coloured
+  // void". Tell the player what happened instead of leaving them driving
+  // blind, and restore automatically when the browser hands the context back.
+  canvas.addEventListener('webglcontextlost', (ev) => {
+    ev.preventDefault();
+    app.contextLost = true;
+    app.running = false;
+    try { app.hud?.showMessage?.('GRAPHICS CONTEXT LOST — RECOVERING', 'warn', 6000); } catch {}
+    console.warn('[apex] WebGL context lost');
+  }, false);
+  canvas.addEventListener('webglcontextrestored', () => {
+    app.contextLost = false;
+    console.warn('[apex] WebGL context restored — rebuilding');
+    worldCache.clear();
+    try { app.hud?.showMessage?.('GRAPHICS RESTORED', 'info', 2500); } catch {}
+    if (app.config) startRace(app.config);
+  }, false);
+
   window.addEventListener('resize', resize, { passive: true });
   window.addEventListener('orientationchange', () => setTimeout(resize, 250), { passive: true });
 
@@ -354,11 +373,19 @@ async function startRace(cfg) {
         puddleMask: app.weather?.getPuddleMask?.(),
       });
       if (app.world?.group) scene.add(app.world.group);
-      if (app.world) { app.world._circuitId = cacheKey; worldCache.set(cacheKey, app.world); }
+      if (app.world) {
+        // Only ever keep ONE built world. Each holds a full set of geometry and
+        // textures; letting them pile up exhausts VRAM and can drop the WebGL
+        // context, which presents as "the graphics didn't load".
+        for (const [k, w] of worldCache) {
+          if (k !== cacheKey) { try { w.dispose?.(); } catch {} worldCache.delete(k); }
+        }
+        app.world._circuitId = cacheKey;
+        worldCache.set(cacheKey, app.world);
+      }
     } catch (err) { console.warn('[apex] track world failed', err); app.world = null; }
   }
   if (!app.world) buildFallbackWorld(scene);
-  gradeWorldMaterials(app.world, circuit);
   try {
     if (app.pitLane) { app.pitLane.dispose(); app.pitLane = null; }
     app.pitLane = buildPitLane(scene, app.track, circuit);
@@ -496,165 +523,6 @@ function nextFrame() {
   });
 }
 
-/**
- * Trackside colour grade. Procedural materials tend to come out as flat,
- * over-saturated blocks of colour; real circuits are darker, duller and much
- * more varied. This pulls the run-off surfaces toward reference photography.
- */
-function gradeWorldMaterials(world, circuit) {
-  if (!world || !world.materials) return;
-  const m = world.materials;
-  const tint = circuit?.ambience?.grassColor;
-  try {
-    if (m.grass) {
-      // Real trackside grass is a dull olive, not a bright lawn green.
-      m.grass.color.set(tint || 0x53703a).multiplyScalar(0.86);
-      m.grass.roughness = 1.0;
-      m.grass.metalness = 0.0;
-      if ('envMapIntensity' in m.grass) m.grass.envMapIntensity = 0.35;
-    }
-    if (m.astro) {
-      // Astroturf reads as a deep synthetic green, not white stripes.
-      m.astro.color.set(0x2f6b34);
-      m.astro.roughness = 0.94;
-      if ('envMapIntensity' in m.astro) m.astro.envMapIntensity = 0.30;
-    }
-    if (m.gravel) {
-      m.gravel.color.set(0x9c8f76);
-      m.gravel.roughness = 1.0;
-      if ('envMapIntensity' in m.gravel) m.gravel.envMapIntensity = 0.25;
-    }
-    if (m.concrete) {
-      m.concrete.color.set(0x9a9a95);
-      m.concrete.roughness = 0.92;
-      if ('envMapIntensity' in m.concrete) m.concrete.envMapIntensity = 0.4;
-    }
-    if (m.asphalt) {
-      // Fresh F1 tarmac is near-black and only mildly reflective when dry.
-      m.asphalt.color.multiplyScalar(0.82);
-      if ('envMapIntensity' in m.asphalt) m.asphalt.envMapIntensity = 0.55;
-    }
-    if (m.kerb && 'envMapIntensity' in m.kerb) m.kerb.envMapIntensity = 0.5;
-  } catch (err) { console.warn('[apex] material grade skipped', err); }
-}
-
-/**
- * Build a visible pit lane. The track geometry module only paints entry/exit
- * guide lines, so the pit lane was an invisible strip of grass you could be
- * penalised inside. This lays down a real surface, a separating wall, the
- * speed-limit lines and the garage boxes.
- */
-function buildPitLane(scene, track, circuit) {
-  const group = new THREE.Group();
-  const pit = track.pit;
-  const span = (pit.exitS - pit.entryS + track.length) % track.length;
-  const HALF = 4.0;                       // pit lane is 8 m wide
-  const sideSign = pit.side === 'right' ? 1 : -1;   // CONSTANT: never derived
-                                                    // from the ramping offset
-
-  // Only build where the lane has actually separated from the racing surface.
-  // The entry/exit ramps pass close to the track, and anything drawn there
-  // (especially the wall) ends up standing on the circuit itself.
-  // Must exceed the lane's own half-width, or the ribbon's inner edge still
-  // overlaps the racing surface at the ends of the ramp.
-  const CLEAR = HALF + 1.0;
-  const isClear = (f) => {
-    const s = pit.entryS + span * f;
-    return Math.abs(pit.lane(s)) >= track.sample(s).width + CLEAR;
-  };
-  let f0 = -1, f1 = -1;
-  for (let i = 0; i <= 400; i++) { const f = i / 400; if (isClear(f)) { f0 = f; break; } }
-  for (let i = 400; i >= 0; i--) { const f = i / 400; if (isClear(f)) { f1 = f; break; } }
-  if (f0 < 0 || f1 <= f0) return { group, dispose() {} };   // no usable pit lane
-
-  const STEPS = Math.max(24, Math.round((span * (f1 - f0)) / 6));
-  const posArr = [], uvArr = [], idxArr = [];
-  const wallPos = [], wallIdx = [];
-  for (let i = 0; i <= STEPS; i++) {
-    const f = f0 + (f1 - f0) * (i / STEPS);
-    const s = pit.entryS + span * f;
-    const smp = track.sample(s);
-    const off = pit.lane(s);
-    const cx = smp.pos.x + smp.lateral.x * off;
-    const cy = smp.pos.y + smp.lateral.y * off + 0.015;
-    const cz = smp.pos.z + smp.lateral.z * off;
-    for (let j = -1; j <= 1; j += 2) {
-      posArr.push(cx + smp.lateral.x * HALF * j, cy, cz + smp.lateral.z * HALF * j);
-      uvArr.push((j + 1) * 0.5, (span * f) / 8);
-    }
-    // The separating wall sits just outside the TRACK edge — a fixed distance
-    // from the circuit, not an offset from the moving lane centre.
-    const wLat = sideSign * (smp.width + 2.0);
-    const wx = smp.pos.x + smp.lateral.x * wLat;
-    const wy = smp.pos.y + smp.lateral.y * wLat;
-    const wz = smp.pos.z + smp.lateral.z * wLat;
-    wallPos.push(wx, wy, wz, wx, wy + 1.05, wz);
-  }
-  for (let i = 0; i < STEPS; i++) {
-    const a2 = i * 2;
-    idxArr.push(a2, a2 + 2, a2 + 1, a2 + 1, a2 + 2, a2 + 3);
-    const w0 = i * 2;
-    wallIdx.push(w0, w0 + 2, w0 + 1, w0 + 1, w0 + 2, w0 + 3,
-                 w0 + 1, w0 + 2, w0, w0 + 3, w0 + 2, w0 + 1);
-  }
-
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvArr, 2));
-  g.setIndex(idxArr); g.computeVertexNormals();
-  const laneMat = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.92 });
-  const lane = new THREE.Mesh(g, laneMat);
-  lane.receiveShadow = true;
-  group.add(lane);
-
-  const wg = new THREE.BufferGeometry();
-  wg.setAttribute('position', new THREE.Float32BufferAttribute(wallPos, 3));
-  wg.setIndex(wallIdx); wg.computeVertexNormals();
-  const wallMat = new THREE.MeshStandardMaterial({ color: 0xd8d8d4, roughness: 0.8, side: THREE.DoubleSide });
-  const wall = new THREE.Mesh(wg, wallMat);
-  wall.castShadow = true; wall.receiveShadow = true;
-  group.add(wall);
-
-  // Garages, set back on the far side of the lane.
-  const boxGeo = new THREE.BoxGeometry(7.5, 4.2, 9);
-  const mats = [];
-  for (let i = 0; i < 10; i++) {
-    const f = f0 + (f1 - f0) * (0.10 + i * 0.085);
-    if (f > f1) break;
-    const s = pit.entryS + span * f;
-    const smp = track.sample(s);
-    const off = pit.lane(s);
-    const t = TEAMS[i % TEAMS.length];
-    const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(t.colors.primary).multiplyScalar(0.55), roughness: 0.85,
-    });
-    mats.push(mat);
-    const m = new THREE.Mesh(boxGeo, mat);
-    const lat = off + sideSign * (HALF + 5.0);
-    m.position.set(
-      smp.pos.x + smp.lateral.x * lat,
-      smp.pos.y + 2.1,
-      smp.pos.z + smp.lateral.z * lat,
-    );
-    m.rotation.y = Math.atan2(smp.tangent.x, smp.tangent.z);
-    m.castShadow = true; m.receiveShadow = true;
-    group.add(m);
-  }
-
-  group.matrixAutoUpdate = false;
-  group.updateMatrix();
-  scene.add(group);
-  return {
-    group,
-    dispose() {
-      g.dispose(); wg.dispose(); boxGeo.dispose();
-      laneMat.dispose(); wallMat.dispose();
-      for (const m of mats) m.dispose();
-      scene.remove(group);
-    },
-  };
-}
-
 // ---------------------------------------------------------------- fallbacks
 function buildFallbackWorld(scene) {
   const t = app.track;
@@ -680,9 +548,23 @@ function buildFallbackWorld(scene) {
   g.setIndex(idx); g.computeVertexNormals();
   const road = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x2b2d31, roughness: 0.92 }));
   road.receiveShadow = true;
+  // Give the ground a real texture — a flat green plane reads as "the game
+  // failed to load" even when everything else is working.
+  const gc = document.createElement('canvas'); gc.width = gc.height = 256;
+  const gx = gc.getContext('2d');
+  gx.fillStyle = '#46603a'; gx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 9000; i++) {
+    const v = 28 + Math.random() * 55;
+    gx.fillStyle = `rgba(${v + 26},${v + 46},${v + 16},0.5)`;
+    gx.fillRect(Math.random() * 256, Math.random() * 256, 2, 1 + Math.random() * 3);
+  }
+  const gTex = new THREE.CanvasTexture(gc);
+  gTex.wrapS = gTex.wrapT = THREE.RepeatWrapping;
+  gTex.repeat.set(420, 420);
+  gTex.colorSpace = THREE.SRGBColorSpace;
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(9000, 9000),
-    new THREE.MeshStandardMaterial({ color: 0x3d5a34, roughness: 1 }),
+    new THREE.MeshStandardMaterial({ map: gTex, color: 0xffffff, roughness: 1 }),
   );
   ground.rotation.x = -Math.PI / 2; ground.position.y = -0.35; ground.receiveShadow = true;
   const group = new THREE.Group(); group.add(ground, road);
@@ -742,7 +624,7 @@ function frame(now) {
 
   const input = app.controls ? app.controls.update(dtRaw) : null;
 
-  if (app.running && !app.paused) {
+  if (app.running && !app.paused && !app.contextLost) {
     if (input?.pause) { pauseRace(); }
     else {
       stepSimulation(dtRaw, input);
