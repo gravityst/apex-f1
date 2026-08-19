@@ -119,11 +119,22 @@ export function createEngine(canvas, opts = {}) {
     }
     rig.pos.copy(_v);
 
-    // look-at target ahead of the car, biased toward where the track goes
+    // Look-at target ahead of the CAR, with only a light bias toward where the
+    // track goes. Biasing hard toward the track makes the camera swing round a
+    // corner while the car is still going straight, throwing the car out of
+    // frame — it reads as the camera turning without you. The bias also fades
+    // out entirely when the car is off line or pointing somewhere else, which
+    // is exactly when it was most disorienting.
     const laneAhead = Math.min(track.length * 0.2, cfg.look + speed * 0.42);
     const sm = track.sample(car.lapDistance + laneAhead);
     _v2.copy(car.position).addScaledVector(car.forward, cfg.look);
-    _v2.lerp(sm.pos, rig.mode === 'cockpit' || rig.mode === 'helmet' ? 0.42 : 0.30);
+    const onLine = 1 - THREE.MathUtils.clamp(
+      (Math.abs(car.lateral) - track.sample(car.lapDistance).width) / 6, 0, 1,
+    );
+    const aligned = THREE.MathUtils.clamp(car.forward.dot(sm.tangent), 0, 1);
+    const bias = (rig.mode === 'cockpit' || rig.mode === 'helmet' ? 0.20 : 0.13)
+      * onLine * aligned;
+    _v2.lerp(sm.pos, bias);
     if (rig.lookBack > 0.5) _v2.copy(car.position).addScaledVector(car.forward, -cfg.look * 0.6);
     rig.look.copy(_v2);
 

@@ -789,9 +789,12 @@ function stepSimulation(dtRaw, input) {
       app.audio?.playUI?.('click');
     }
     if (input.pit) p.input.pitRequest = !p.input.pitRequest;
-    if (input.reset && p.speed < 12) {
-      const s = p.lapDistance;
-      p.reset(s, app.track.racingLine(s), null);
+    if (input.reset) {
+      // Recovery must work at any speed — needing to be almost stopped is
+      // useless precisely when you are sliding backwards down an escape road.
+      if (race.recoverToTrack) race.recoverToTrack(p);
+      else { const s = p.lapDistance; p.reset(s, app.track.racingLine(s), null); }
+      app.hud?.showMessage?.('RECOVERED', 'info', 1200);
     }
     app.controls.updateWheelVisual();
   }
@@ -942,6 +945,15 @@ function updateVisuals(dt) {
       if (player?.lastImpact > 0.05) app.postfx.setImpact?.(player.lastImpact);
     } catch {}
   }
+
+  // Wrong-way warning, throttled so it does not spam the message queue.
+  if (player && player.wrongWay) {
+    app._wrongWayMsg = (app._wrongWayMsg || 0) - dt;
+    if (app._wrongWayMsg <= 0) {
+      app._wrongWayMsg = 1.2;
+      try { app.hud?.showMessage?.('WRONG WAY', 'warn', 1100); } catch {}
+    }
+  } else app._wrongWayMsg = 0;
 
   // audio + hud
   try {

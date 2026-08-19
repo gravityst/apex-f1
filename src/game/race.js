@@ -53,7 +53,7 @@ export function createRace(opts) {
       position: 1, gapToLeader: 0, gapAhead: 0, interval: 0,
       retired: false, finished: false, finishTime: 0,
       pitStops: 0, inPitLane: false, pitBoxTimer: 0, pitState: 'none',
-      pitCommitted: false, pitLaneTime: 0,
+      pitCommitted: false, pitLaneTime: 0, wrongWay: false, wrongWayTimer: 0, stuckTimer: 0,
       penalties: 0, penaltyTime: 0, warnings: 0,
       trackLimitStrikes: 0, offTrackSince: -1,
       drsEligible: false, drsArmed: false, drsZone: -1,
@@ -280,7 +280,11 @@ export function createRace(opts) {
       const fullyOff = Math.abs(c.lateral) > w + 1.9;
       // A car committed to the pits is legitimately off the racing surface —
       // it must not collect track-limits strikes on the way in or out.
-      if (fullyOff && !e.inPitLane && !e.pitCommitted && race.state === 'racing') {
+      // Only police limits for a car actually racing. One parked in the gravel
+      // or crawling back on gains nothing, and stacking penalties on it just
+      // punishes a single bad moment over and over.
+      const racingPace = c.speed > 14 && !e.wrongWay;
+      if (fullyOff && racingPace && !e.inPitLane && !e.pitCommitted && race.state === 'racing') {
         if (e.offTrackSince < 0) e.offTrackSince = race.time;
         else if (race.time - e.offTrackSince > 0.35) {
           e.offTrackSince = race.time + 2.5;    // debounce
@@ -383,7 +387,11 @@ export function createRace(opts) {
         const vn = c.velocity.dot(_n);
         c.position.addScaledVector(sm.lateral, -sign * over);
         _p.copy(c.position).addScaledVector(sm.lateral, sign * 1.0);
-        c.impact(_n, Math.abs(vn), _p, false);
+        // Only a genuine impact if the car is moving INTO the barrier. Resting
+        // against it would otherwise scrub speed every single frame and pin the
+        // car there permanently with the throttle wide open.
+        if (vn < -0.8) c.impact(_n, Math.abs(vn), _p, false);
+        else if (vn < 0) c.velocity.addScaledVector(_n, -vn);
         if (c.isPlayer && Math.abs(vn) > 12) race.log('CONTACT — BARRIER', 'warn');
       }
     }
@@ -467,20 +475,50 @@ export function createRace(opts) {
     for (const c of cars) {
       const e = entry.get(c);
       if (e.retired || e.finished) continue;
-      if (c.speed < 2.2 && !e.inPitLane && e.pitState !== 'stopped') {
+
+      // Which way is this car pointing round the lap?
+      const tang = track.sample(c.lapDistance).tangent;
+      e.wrongWay = c.forward.dot(tang) < -0.25 && c.speed > 3;
+      c.wrongWay = e.wrongWay;
+
+      const beached = c.speed < 2.2 && !e.inPitLane && e.pitState !== 'stopped';
+      if (beached) {
         e.stuckTimer = (e.stuckTimer || 0) + dt;
-        if (e.stuckTimer > 18) {
+        // A player pinned against a barrier with the throttle open must not sit
+        // there for twenty seconds collecting penalties.
+        const limit = c.isPlayer ? 3.5 : 10;
+        if (e.stuckTimer > limit) {
           if (c.isPlayer) {
-            // Never retire the player — put them back on the track instead.
-            const s = c.lapDistance;
-            c.reset(s, track.racingLine(s), null);
+            recoverToTrack(c);
             e.stuckTimer = 0;
-            race.log('RECOVERED TO TRACK', 'warn');
+            race.log('RECOVERED TO TRACK', 'info');
           } else retire(e, 'beached');
         }
       } else e.stuckTimer = 0;
+
+      // Driving the wrong way for a sustained period also gets a recovery.
+      if (e.wrongWay) {
+        e.wrongWayTimer = (e.wrongWayTimer || 0) + dt;
+        if (c.isPlayer && e.wrongWayTimer > 4) {
+          recoverToTrack(c);
+          e.wrongWayTimer = 0;
+          race.log('WRONG WAY — RECOVERED', 'warn');
+        }
+      } else e.wrongWayTimer = 0;
     }
   }
+
+  /** Put a car back on the racing line, pointing the right way, at a sane speed. */
+  function recoverToTrack(c) {
+    const s2 = c.lapDistance;
+    const keep = Math.min(c.speed, 18);
+    c.reset(s2, track.racingLine(s2), null);
+    c.velocity.copy(c.forward).multiplyScalar(keep);
+    c.gear = keep > 8 ? 2 : 1;
+    const e = entry.get(c);
+    if (e) { e.offTrackSince = -1; e.stuckTimer = 0; e.wrongWayTimer = 0; }
+  }
+  race.recoverToTrack = recoverToTrack;
 
   // ---- reliability --------------------------------------------------------
   function updateReliability(dt) {
