@@ -44,14 +44,15 @@ export function createEngine(canvas, opts = {}) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality.pixelRatio));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.92;
+  renderer.toneMappingExposure = 0.96;
   renderer.shadowMap.enabled = quality.shadows;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = true;
   renderer.info.autoReset = true;
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0x9fb6cc, 620, quality.drawDistance);
+  // Fog starting at 620 m laid a bright band right across the skyline.
+  scene.fog = new THREE.Fog(0x9dc0da, 900, quality.drawDistance * 1.55);
 
   const camera = new THREE.PerspectiveCamera(62, 1, 0.22, quality.drawDistance * 1.6);
   camera.position.set(0, 4, -12);
@@ -210,7 +211,7 @@ export function createEngine(canvas, opts = {}) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, quality.pixelRatio * (opts.resScale || 1)));
     renderer.shadowMap.enabled = quality.shadows;
     renderer.shadowMap.needsUpdate = true;
-    scene.fog.far = quality.drawDistance;
+    scene.fog.far = quality.drawDistance * 1.55;
     camera.far = quality.drawDistance * 1.6;
     camera.updateProjectionMatrix();
     resize(width, height);

@@ -462,7 +462,7 @@ async function startRace(cfg) {
         quality,
         // The stock tier is far too hazy in daylight: tight bloom only on real
         // highlights (sun, brake glow, sparks), and almost no lens dirt.
-        bloomStrength: 0.26, bloomRadius: 0.28, bloomThreshold: 0.92,
+        bloomStrength: 0.20, bloomRadius: 0.26, bloomThreshold: 0.96,
         dirt: 0.10, vignette: 0.40, chromatic: 0.30, grain: 0.022,
         motionBlur: settings.motionBlur ? 0.75 : 0,
       });
@@ -656,8 +656,24 @@ function stepSimulation(dtRaw, input) {
     // The AI is NOT negated: it derives its steer from a target expressed in
     // the same body frame, so it is already self-consistent.
     p.input.steer = -input.steer;
-    p.throttle = racing ? input.throttle : 0;
-    p.brake = racing ? input.brake : 1;
+    // Reverse: hold the brake with the car stopped and it backs up, which is
+    // what everyone expects S / down-arrow to do once you are stationary.
+    if (racing && p.aids.autoGear) {
+      if (p.gear >= 0 && p.speed < 1.4 && input.brake > 0.5) {
+        p._revHold = (p._revHold || 0) + dtRaw;
+        if (p._revHold > 0.5) { p.gear = -1; p._revHold = 0; }
+      } else if (p.gear === -1 && (input.throttle > 0.3 || p.velocity.dot(p.forward) > 1)) {
+        p.gear = 1; p._revHold = 0;
+      } else if (input.brake <= 0.5) p._revHold = 0;
+    }
+    if (p.gear === -1) {
+      // In reverse the pedals swap: brake backs you up, throttle stops you.
+      p.throttle = racing ? input.brake : 0;
+      p.brake = racing ? input.throttle : 1;
+    } else {
+      p.throttle = racing ? input.throttle : 0;
+      p.brake = racing ? input.brake : 1;
+    }
     p.input.throttle = p.throttle;
     p.input.brake = p.brake;
     p.input.drsRequest = input.drs;
@@ -760,7 +776,9 @@ function updateVisuals(dt) {
   }
   if (engine.scene.fog && app.sky?.getFogColor) {
     const c = app.sky.getFogColor();
-    if (c) engine.scene.fog.color.copy(c);
+    // Take the sky's horizon colour but keep it a shade deeper — used raw it is
+    // almost white and bleaches the whole skyline.
+    if (c) engine.scene.fog.color.copy(c).multiplyScalar(0.80);
   }
   try { app.world?.setWetness?.(w.trackWetness); } catch {}
   try { app.world?.update?.(dt, cam); } catch {}

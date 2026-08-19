@@ -468,6 +468,14 @@ export function createVehicle(opts = {}) {
     }
     car.tcActive = throttle < car.throttle - 0.02;
 
+    // Reverse is short and deliberately limited — an F1 car does not do 100 km/h
+    // backwards, and letting it makes recovery feel broken rather than helpful.
+    if (car.gear < 0) {
+      const revSpeed = -car.velocity.dot(car.forward);
+      if (revSpeed > 9.0) throttle = 0;
+      else if (revSpeed > 7.0) throttle = Math.min(throttle, 0.25);
+    }
+
     let tq = engineTorque(car.rpm) * throttle * perfPower;
     // engine braking on a closed throttle
     if (throttle < 0.06 && car.rpm > cfg.idleRpm) tq -= (car.rpm / cfg.revLimit) * 118;
@@ -771,6 +779,7 @@ export function createVehicle(opts = {}) {
 
   function autoGear(dt) {
     if (!car.aids.autoGear || car.shiftTimer > 0) return;
+    if (car.gear < 0) return;   // reverse is selected deliberately; leave it
     const ratio = car.gear > 0 ? cfg.gearRatios[car.gear - 1] : 0;
     if (car.gear === 0 && car.throttle > 0.1) { car.gear = 1; return; }
     if (car.gear > 0 && car.rpm > cfg.shiftRpm && car.gear < cfg.gearRatios.length) shift(1);

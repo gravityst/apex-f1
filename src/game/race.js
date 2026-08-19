@@ -11,6 +11,7 @@ import { TYRE_COMPOUNDS } from './teams.js';
 
 const _n = new THREE.Vector3(), _p = new THREE.Vector3(), _r = new THREE.Vector3();
 const _ax = new THREE.Vector3(), _bx = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
 
 export const POINTS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
 
@@ -481,7 +482,13 @@ export function createRace(opts) {
       e.wrongWay = c.forward.dot(tang) < -0.25 && c.speed > 3;
       c.wrongWay = e.wrongWay;
 
-      const beached = c.speed < 2.2 && !e.inPitLane && e.pitState !== 'stopped';
+      // Braking to a standstill ON the track is something a driver chooses to
+      // do; it must not be mistaken for being beached. Only a car that is off
+      // the surface, pointing the wrong way, or otherwise unable to move counts.
+      const halfW = track.sample(c.lapDistance).width;
+      const offSurface = Math.abs(c.lateral) > halfW + 1.0;
+      const deliberateStop = c.isPlayer && c.brake > 0.5 && !offSurface && !e.wrongWay;
+      const beached = c.speed < 2.2 && !e.inPitLane && e.pitState !== 'stopped' && !deliberateStop;
       if (beached) {
         e.stuckTimer = (e.stuckTimer || 0) + dt;
         // A player pinned against a barrier with the throttle open must not sit
@@ -508,12 +515,26 @@ export function createRace(opts) {
     }
   }
 
-  /** Put a car back on the racing line, pointing the right way, at a sane speed. */
+  /**
+   * Put a car back on the racing line pointing the right way.
+   * Deliberately does NOT call reset(): that is the race-start path and would
+   * wipe the lap count, fuel load, tyre wear, damage and ERS charge.
+   */
   function recoverToTrack(c) {
     const s2 = c.lapDistance;
+    const sm = track.sample(s2);
+    const lat = track.racingLine(s2);
     const keep = Math.min(c.speed, 18);
-    c.reset(s2, track.racingLine(s2), null);
+    c.position.copy(sm.pos).addScaledVector(sm.lateral, lat);
+    c.position.y += 0.28;
+    c.quaternion.setFromAxisAngle(UP, Math.atan2(sm.tangent.x, sm.tangent.z));
+    if (c.refreshBasis) c.refreshBasis();
     c.velocity.copy(c.forward).multiplyScalar(keep);
+    c.angularVelocity.set(0, 0, 0);
+    for (const w of c.wheels) {
+      w.omega = keep / Math.max(0.1, w.radius);
+      w.slipRelax = 0; w.absCut = 0; w.susVel = 0;
+    }
     c.gear = keep > 8 ? 2 : 1;
     const e = entry.get(c);
     if (e) { e.offTrackSince = -1; e.stuckTimer = 0; e.wrongWayTimer = 0; }

@@ -140,8 +140,8 @@ const MAX_BILLBOARDS = 150;
  * ====================================================================== */
 
 const CONDITION_TABLE = {
-  clear: { cover: 0.06, storm: 0.0, turbidity: 2.1, humidity: 0.15, cirrus: 0.18 },
-  cloudy: { cover: 0.44, storm: 0.0, turbidity: 3.4, humidity: 0.42, cirrus: 0.5 },
+  clear: { cover: 0.30, storm: 0.0, turbidity: 2.0, humidity: 0.15, cirrus: 0.42 },
+  cloudy: { cover: 0.56, storm: 0.0, turbidity: 3.2, humidity: 0.42, cirrus: 0.58 },
   overcast: { cover: 0.86, storm: 0.12, turbidity: 5.2, humidity: 0.75, cirrus: 0.7 },
   lightrain: { cover: 0.76, storm: 0.3, turbidity: 6.0, humidity: 0.85, cirrus: 0.55 },
   rain: { cover: 0.9, storm: 0.62, turbidity: 7.4, humidity: 0.95, cirrus: 0.4 },
@@ -1272,8 +1272,8 @@ export function createSky(renderer, scene, opts = {}) {
     uMieG: { value: 0.80 },
     uExposure: { value: EXPOSURE_BASE },
     uSunAngularRadius: { value: 0.0068 },
-    uSunDiscIntensity: { value: 1200.0 },
-    uSunGlow: { value: 130.0 },
+    uSunDiscIntensity: { value: 660.000 },
+    uSunGlow: { value: 58.500 },
 
     uNight: { value: 0 },
     uNightSky: { value: new THREE.Vector3(0.0016, 0.0026, 0.0062) },
@@ -1282,10 +1282,10 @@ export function createSky(renderer, scene, opts = {}) {
     uMilkyWay: { value: quality.milkyWay },
 
     uHazeColor: { value: new THREE.Vector3(0.55, 0.62, 0.75) },
-    uHorizonHaze: { value: 0.34 },
+    uHorizonHaze: { value: 0.15 },
     uGroundLevel: { value: 0.42 },
 
-    uCloudCover: { value: 0.06 },
+    uCloudCover: { value: 0.30 },
     uCloudSharp: { value: 0.30 },
     uCloudOpacity: { value: 0.96 },
     uCloudScale: { value: 0.85 },
@@ -1295,7 +1295,7 @@ export function createSky(renderer, scene, opts = {}) {
     uCloudDrift: { value: new THREE.Vector2() },
     uCirrusDrift: { value: new THREE.Vector2() },
     uParallax: { value: new THREE.Vector2() },
-    uCirrusCover: { value: 0.18 },
+    uCirrusCover: { value: 0.42 },
     uCloudLit: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
     uCloudDark: { value: new THREE.Vector3(0.35, 0.38, 0.45) },
     uTime: { value: 0 },
