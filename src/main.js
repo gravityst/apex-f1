@@ -72,9 +72,20 @@ const app = {
   accumulator: 0, last: 0, fps: 60, frames: 0, fpsTime: 0,
   config: null, ready: false,
 };
+// Build stamp — so a stale copy is obvious at a glance instead of being
+// mistaken for a bug. Shown on the title screen and readable as __APEX.build.
+app.build = '0820-1717';
 window.__APEX = app;
 // Exposed for debugging and automated smoke tests.
 app.startRace = (cfg) => startRace(cfg);
+// Drive one simulation step directly. requestAnimationFrame is suspended in a
+// background tab, so without this the game cannot be exercised or debugged
+// unless the window happens to be visible.
+app.tick = (dt) => {
+  const input = app.controls ? app.controls.update(dt) : null;
+  if (app.running && !app.paused && !app.contextLost) stepSimulation(dt, input);
+  return input;
+};
 app.showScreen = (n, d) => showScreen(n, d);
 
 function qualityName() {
@@ -135,6 +146,18 @@ async function boot() {
   }
 
   app.ready = true;
+  try {
+    const el = document.querySelector('.apx-build, #apex-build') || (() => {
+      const d = document.createElement('div');
+      d.id = 'apex-build';
+      d.style.cssText = 'position:fixed;left:8px;bottom:6px;z-index:300;'
+        + 'font:600 10px/1 ui-monospace,monospace;letter-spacing:.08em;'
+        + 'color:rgba(255,255,255,.34);pointer-events:none';
+      document.body.appendChild(d);
+      return d;
+    })();
+    el.textContent = 'build ' + app.build;
+  } catch { /* non-fatal */ }
   showScreen('title');
   requestAnimationFrame(frame);
 }
