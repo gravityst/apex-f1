@@ -425,8 +425,12 @@ export function createTrack(circuit) {
   {
     const gridStartS = (length - 190) % length;
     for (let i = 0; i < 20; i++) {
+      // Row 0 is POLE and must be the furthest along the lap. Adding row * 8.6
+      // put the pole sitter 77 m BEHIND the back row: the lights went out, the
+      // whole field streamed past, and P1 became P20 immediately — which from
+      // the cockpit reads as the car being dragged backwards.
       const row = Math.floor(i / 2);
-      const s = (gridStartS + row * 8.6) % length;
+      const s = (gridStartS + (9 - row) * 8.6) % length;
       const sideSign = i % 2 === 0 ? -1 : 1;
       const idx = Math.floor((s / length) * N) % N;
       const off = sideSign * (wid[idx] * 0.46);
