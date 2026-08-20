@@ -65,6 +65,24 @@ circuit's reference lap and re-targets itself to bracket you — some drivers
 faster, some slower — so there is always someone to chase and someone chasing.
 The adjustment drifts slowly and is capped, so it never feels like rubber-banding.
 
+## The racing guide
+
+New to sim racing? A coloured line is painted along the ideal racing line,
+with chevrons flowing in the direction of travel:
+
+- **green** — full throttle
+- **yellow** — ease off, a corner is coming
+- **red** — brake hard, now
+
+The colours are not hand-placed. They come from the same look-ahead braking
+solver the AI uses: at every point it compares the speed you can carry there
+against the slowest point ahead and works out how hard you would have to brake.
+So red begins exactly where a quick driver would actually hit the pedal, and
+following the line puts you on the fastest way round.
+
+Turn it off, or reduce it to just the braking zones, under Settings → Driving
+aids → Racing line.
+
 ## Everything else
 
 - **5 circuits**, each hand-built: a fast seaside track, a night street circuit,

@@ -28,7 +28,7 @@ const settings = Object.assign({
   particles: 1, fov: 0, motionBlur: true,
   masterVolume: 0.8, engineVolume: 0.8, uiVolume: 0.7,
   units: 'kmh', camera: 'chase',
-  tc: 0.45, abs: 0.55, autoGear: true, stability: 0.45, racingLineAid: 'off',
+  tc: 0.45, abs: 0.55, autoGear: true, stability: 0.45, racingLineAid: 'full',
   touchLayout: 'drag', steerSensitivity: 1, assistThrottle: false,
 }, loadSettings());
 
@@ -270,6 +270,9 @@ function applySetting(key, value) {
     case 'uiVolume': app.audio?.setUIVolume?.(value); break;
     case 'units': app.hud?.setUnits?.(value); break;
     case 'camera': app.engine.setMode(value); break;
+    case 'racingLineAid':
+      app.guide?.setMode(value === 'off' ? 'off' : value === 'corners' ? 'corners' : 'full');
+      break;
     case 'fov': app.engine.rig.fovBase = 62 + value; break;
     case 'touchLayout': app.controls?.setLayout?.(value); break;
     case 'steerSensitivity': app.controls?.setSensitivity?.(value); break;
@@ -301,6 +304,7 @@ function teardownRace() {
   }
   app.audio?.stopEngine?.();
   if (app.pitLane) { try { app.pitLane.dispose(); } catch {} app.pitLane = null; }
+  if (app.guide) { try { app.guide.dispose(); } catch {} app.guide = null; }
   app.cars = []; app.ais = []; app.models = []; app.player = null;
   app.race = null; app.track = null; app.world = null;
 }
@@ -392,6 +396,12 @@ async function startRace(cfg) {
   }
   if (!app.world) buildFallbackWorld(scene);
   polishWorldLook(app.world);
+  try {
+    if (app.guide) { app.guide.dispose(); app.guide = null; }
+    app.guide = buildRacingGuide(scene, app.track);
+    app.guide.setMode(settings.racingLineAid === 'off' ? 'off'
+      : settings.racingLineAid === 'corners' ? 'corners' : 'full');
+  } catch (err) { console.warn('[apex] racing guide failed', err); app.guide = null; }
   try {
     if (app.pitLane) { app.pitLane.dispose(); app.pitLane = null; }
     app.pitLane = buildPitLane(scene, app.track, circuit);
@@ -506,6 +516,28 @@ async function startRace(cfg) {
   app.audio?.setMasterVolume?.(settings.masterVolume);
   app.audio?.startEngine?.();
 
+  // First-run tutorial for the racing guide. Shown for the first few races and
+  // then never again, so it teaches without nagging.
+  try {
+    const seen = Number(localStorage.getItem('apex-guide-seen') || 0);
+    if (settings.racingLineAid !== 'off' && seen < 3) {
+      localStorage.setItem('apex-guide-seen', String(seen + 1));
+      const tips = [
+        ['FOLLOW THE ARROWS — THEY MARK THE FASTEST LINE', 'info', 3200],
+        ['GREEN = FULL THROTTLE', 'info', 2600],
+        ['YELLOW = EASE OFF, CORNER AHEAD', 'warn', 2600],
+        ['RED = BRAKE HARD', 'penalty', 3000],
+      ];
+      tips.forEach(([text, kind, ms], i) => {
+        setTimeout(() => { try { app.hud?.showMessage?.(text, kind, ms); } catch {} }, 900 + i * 2900);
+      });
+    }
+  } catch { /* private mode */ }
+
+  // Start every race from a clean input state — a latched key from the menus
+  // or a previous race would otherwise drive the car on its own.
+  try { app.controls?.reset?.(); } catch {}
+
   step(1, 'Ready');
   app.running = true;
   app.paused = false;
@@ -558,26 +590,32 @@ function groundDetail(mat, opts) {
   mat.userData.__apxDetail = true;
   const o = Object.assign({ large: 0.010, small: 0.13, amount: 0.42, stripes: 0, tint: [1, 1, 1] }, opts || {});
   const prev = mat.onBeforeCompile;
-  mat.onBeforeCompile = (sh) => {
-    if (prev) { try { prev(sh); } catch {} }
-    sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vApxW;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvApxW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
-    sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vApxW;\n' + GROUND_NOISE_GLSL)
-      .replace('#include <color_fragment>', `#include <color_fragment>
+  mat.onBeforeCompile = (sh, renderer) => {
+    if (prev) { try { prev(sh, renderer); } catch {} }
+    // These materials already carry an onBeforeCompile of their own (the wet
+    // track effect), which consumes the usual `#include <common>` anchor. So
+    // declare at the top of the source and hook a late, always-present chunk.
+    sh.vertexShader = 'varying vec3 vApxW;\n' + sh.vertexShader;
+    if (sh.vertexShader.indexOf('#include <project_vertex>') !== -1) {
+      sh.vertexShader = sh.vertexShader.replace('#include <project_vertex>',
+        '#include <project_vertex>\n  vApxW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    }
+    sh.fragmentShader = 'varying vec3 vApxW;\n' + GROUND_NOISE_GLSL + sh.fragmentShader;
+    if (sh.fragmentShader.indexOf('#include <dithering_fragment>') !== -1) {
+      sh.fragmentShader = sh.fragmentShader.replace('#include <dithering_fragment>', `#include <dithering_fragment>
       {
         vec2 wp = vApxW.xz;
         float nBig = apxFBM(wp * ${o.large.toFixed(4)});
         float nSml = apxFBM(wp * ${o.small.toFixed(4)});
         float v = mix(nBig, nSml, 0.35);
-        diffuseColor.rgb *= (1.0 - ${o.amount.toFixed(3)} * 0.5) + ${o.amount.toFixed(3)} * v;
-        diffuseColor.rgb *= vec3(${o.tint[0].toFixed(3)}, ${o.tint[1].toFixed(3)}, ${o.tint[2].toFixed(3)});
+        gl_FragColor.rgb *= (1.0 - ${o.amount.toFixed(3)} * 0.5) + ${o.amount.toFixed(3)} * v;
+        gl_FragColor.rgb *= vec3(${o.tint[0].toFixed(3)}, ${o.tint[1].toFixed(3)}, ${o.tint[2].toFixed(3)});
         ${o.stripes > 0 ? `
         float mow = 0.5 + 0.5 * sin(wp.x * 0.052 + wp.z * 0.031);
-        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.10, 1.05, 0.86), mow * ${o.stripes.toFixed(3)});
+        gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.10, 1.05, 0.86), mow * ${o.stripes.toFixed(3)});
         ` : ''}
       }`);
+    }
   };
   mat.needsUpdate = true;
 }
@@ -728,6 +766,146 @@ function buildPitLane(scene, track, circuit) {
       for (const m of mats) m.dispose();
       scene.remove(group);
     },
+  };
+}
+
+/**
+ * The racing guide — a coloured line painted along the ideal line, telling you
+ * where to go and, more importantly, WHEN TO BRAKE.
+ *
+ *   green   full throttle
+ *   yellow  ease off, corner coming
+ *   red     brake hard, now
+ *
+ * The colours are not hand-placed: they come from the same look-ahead braking
+ * solver the AI uses, comparing the speed you can carry here against the
+ * slowest point ahead. So the red always starts exactly where a good driver
+ * would actually hit the brakes.
+ */
+function buildRacingGuide(scene, track) {
+  const STATIONS = Math.max(400, Math.round(track.length / 6));
+  const HALF_W = 0.85;
+  const RAISE = 0.035;
+
+  // --- chevron texture: arrows pointing the way, on a faint band -----------
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 128;
+  const x = c.getContext('2d');
+  x.clearRect(0, 0, 64, 128);
+  x.fillStyle = 'rgba(255,255,255,0.16)';
+  x.fillRect(6, 0, 52, 128);                    // the band itself
+  x.fillStyle = 'rgba(255,255,255,0.95)';       // the chevron
+  x.beginPath();
+  x.moveTo(32, 16); x.lineTo(56, 62); x.lineTo(44, 62);
+  x.lineTo(32, 38); x.lineTo(20, 62); x.lineTo(8, 62);
+  x.closePath(); x.fill();
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+
+  // --- decide the action at every station ---------------------------------
+  const GREEN = new THREE.Color(0x24d15e);
+  const AMBER = new THREE.Color(0xf5c518);
+  const RED = new THREE.Color(0xff2f34);
+  const pos = [], uv = [], col = [], idx = [];
+  const actions = new Float32Array(STATIONS + 1);
+
+  for (let i = 0; i <= STATIONS; i++) {
+    const s = (i / STATIONS) * track.length;
+    const v = track.targetSpeed(s);
+    let demand = 0, slowest = v;
+    for (let d = 12; d < 320; d += 12) {
+      const vl = track.targetSpeed(s + d);
+      if (d <= 190) slowest = Math.min(slowest, vl);
+      if (vl >= v) continue;
+      const need = (v * v - vl * vl) / (2 * d);
+      const cap = 14 + v * 0.36;              // the car's real braking capability
+      demand = Math.max(demand, need / cap);
+    }
+    // Yellow has to be a real warning zone, not the instant between green and
+    // red: a corner that will cost you a chunk of speed within ~190 m earns an
+    // amber stretch even before the braking demand itself climbs.
+    const drop = (v - slowest) / Math.max(1, v);
+    actions[i] = Math.max(demand, drop * 0.62);
+  }
+  // Smooth so the colour bands read as zones rather than flickering stripes.
+  for (let pass = 0; pass < 2; pass++) {
+    const tmp = actions.slice();
+    for (let i = 0; i <= STATIONS; i++) {
+      const a = tmp[(i - 1 + STATIONS) % STATIONS], b = tmp[(i + 1) % STATIONS];
+      actions[i] = (a + 2 * tmp[i] + b) / 4;
+    }
+  }
+
+  const colAt = (d) => (d > 0.46 ? RED : d > 0.11 ? AMBER : GREEN);
+  let vLen = 0;
+  const prev = new THREE.Vector3();
+  for (let i = 0; i <= STATIONS; i++) {
+    const s = (i / STATIONS) * track.length;
+    const sm = track.sample(s);
+    const off = track.racingLine(s);
+    const cx = sm.pos.x + sm.lateral.x * off;
+    const cy = sm.pos.y + sm.lateral.y * off + RAISE;
+    const cz = sm.pos.z + sm.lateral.z * off;
+    if (i > 0) vLen += Math.hypot(cx - prev.x, cz - prev.z);
+    prev.set(cx, cy, cz);
+    const k = colAt(actions[i]);
+    for (let j = -1; j <= 1; j += 2) {
+      pos.push(cx + sm.lateral.x * HALF_W * j, cy, cz + sm.lateral.z * HALF_W * j);
+      uv.push((j + 1) * 0.5, vLen / 7);        // a chevron roughly every 7 m
+      col.push(k.r, k.g, k.b);
+    }
+  }
+  for (let i = 0; i < STATIONS; i++) {
+    const a = i * 2;
+    idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+
+  // Unlit, so it reads as paint and stays legible in shadow, at night and in rain.
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex, vertexColors: true, transparent: true, opacity: 0.92,
+    depthWrite: false, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6,
+    toneMapped: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 3;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+
+  let mode = 'full';
+  return {
+    mesh,
+    /** 'off' | 'corners' (only the braking zones) | 'full' */
+    setMode(m) {
+      mode = m || 'full';
+      mesh.visible = mode !== 'off';
+      mat.opacity = mode === 'corners' ? 0.0 : 0.92;
+      if (mode === 'corners') {
+        // Fade the green away and leave only the warnings.
+        const a = geo.getAttribute('color');
+        for (let i = 0; i <= STATIONS; i++) {
+          const show = actions[i] > 0.11 ? 1 : 0;
+          const k = colAt(actions[i]);
+          for (let j = 0; j < 2; j++) {
+            const n = (i * 2 + j) * 3;
+            a.array[n] = k.r * show; a.array[n + 1] = k.g * show; a.array[n + 2] = k.b * show;
+          }
+        }
+        a.needsUpdate = true;
+        mat.opacity = 0.92;
+      }
+    },
+    update(dt) { tex.offset.y -= dt * 0.55; },   // chevrons flow forward
+    dispose() { geo.dispose(); mat.dispose(); tex.dispose(); scene.remove(mesh); },
   };
 }
 
@@ -991,6 +1169,7 @@ function updateVisuals(dt) {
   }
   try { app.world?.setWetness?.(w.trackWetness); } catch {}
   try { app.world?.update?.(dt, cam); } catch {}
+  try { app.guide?.update(dt); } catch {}
   try { app.weather?.update?.(w, app.cars, cam, dt); } catch {}
 
   // car models

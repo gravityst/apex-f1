@@ -51,8 +51,13 @@ export function createControls(opts = {}) {
   };
   Object.assign(settings, opts.settings || {});
 
-  const isTouch = matchMedia('(hover: none) and (pointer: coarse)').matches
-    || navigator.maxTouchPoints > 1;
+  // A touchscreen laptop or monitor also reports a coarse pointer, but it has a
+  // mouse and keyboard too. Handing those the mobile control layer (and with it
+  // assisted throttle) makes the car drive itself. Require a coarse pointer AND
+  // the absence of a fine one.
+  const hasFine = matchMedia('(any-pointer: fine)').matches;
+  const isTouch = !hasFine
+    && (matchMedia('(any-pointer: coarse)').matches || navigator.maxTouchPoints > 1);
 
   // ---- keyboard -----------------------------------------------------------
   const onKeyDown = (e) => {
@@ -67,6 +72,7 @@ export function createControls(opts = {}) {
   window.addEventListener('keydown', onKeyDown, { passive: false });
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('blur', onBlur);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) onBlur(); });
 
   const anyHeld = (names) => names.some((n) => held.has(n));
   const anyPressed = (names) => names.some((n) => pressed.has(n));
@@ -203,8 +209,13 @@ export function createControls(opts = {}) {
     const dz = (v) => (Math.abs(v) < settings.deadzone ? 0 : (v - Math.sign(v) * settings.deadzone) / (1 - settings.deadzone));
     padSteer = dz(pad.axes[0] || 0);
     // triggers: buttons 6/7 on standard mapping, axes on some drivers
-    const rt = pad.buttons[7] ? pad.buttons[7].value : 0;
-    const lt = pad.buttons[6] ? pad.buttons[6].value : 0;
+    // Triggers need a deadzone of their own. Plenty of pads rest at 0.05-0.2,
+    // and with every source merged each frame that is a permanent throttle
+    // input the player never asked for — the car simply drives itself away.
+    const TDZ = 0.18;
+    const trig = (v) => (v < TDZ ? 0 : (v - TDZ) / (1 - TDZ));
+    const rt = trig(pad.buttons[7] ? pad.buttons[7].value : 0);
+    const lt = trig(pad.buttons[6] ? pad.buttons[6].value : 0);
     padThrottle = Math.max(rt, pad.buttons[0]?.pressed ? 1 : 0);
     padBrake = Math.max(lt, pad.buttons[1]?.pressed ? 1 : 0);
     const edge = (i) => {
@@ -219,7 +230,7 @@ export function createControls(opts = {}) {
     if (edge(3)) pressed.add('__camera');
     if (edge(9)) pressed.add('Escape');
     state.drsHeld = !!pad.buttons[2]?.pressed;
-    const active = Math.abs(padSteer) > 0.02 || padThrottle > 0.02 || padBrake > 0.02;
+    const active = Math.abs(padSteer) > 0.10 || padThrottle > 0.02 || padBrake > 0.02;
     if (active) { state.usingGamepad = true; state.source = 'gamepad'; }
     return state.usingGamepad;
   }
@@ -284,6 +295,21 @@ export function createControls(opts = {}) {
   }
 
   // ---- api ----------------------------------------------------------------
+  /** Drop every latched key/button. A keyup swallowed by the browser (alt-tab,
+   *  a system shortcut) would otherwise leave the throttle stuck on forever. */
+  function reset() {
+    held.clear();
+    pressed.clear();
+    steerSmooth = 0; steerRaw = 0; tiltValue = 0; steerTouch = null;
+    padSteer = 0; padThrottle = 0; padBrake = 0;
+    state.throttle = 0; state.brake = 0; state.steer = 0;
+    state.shiftUp = state.shiftDown = state.camera = false;
+    state.pause = state.reset = state.pit = state.reverse = false;
+    state.drs = state.ers = false; state.look = 0;
+    if (touchUI && touchUI._handlers) touchUI._handlers.active.clear();
+    if (touchUI) touchUI.querySelectorAll('.on').forEach((n) => n.classList.remove('on'));
+  }
+
   function setTouchVisible(v) {
     if (v) buildTouchUI();
     if (touchUI) {
@@ -319,9 +345,25 @@ export function createControls(opts = {}) {
     touchUI = null;
   }
 
+  /** Per-source breakdown — so "the car drives itself" is diagnosable rather
+   *  than guessable. Read it from the console as __APEX.controls.debug(). */
+  function debug() {
+    const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+    return {
+      resolved: { throttle: state.throttle, brake: state.brake, steer: +state.steer.toFixed(3) },
+      keyboard: { held: [...held], throttle: anyHeld(KEYMAP.throttle) ? 1 : 0, brake: anyHeld(KEYMAP.brake) ? 1 : 0 },
+      gamepad: { connected: pads.map((p) => p.id), active: state.usingGamepad,
+                 throttle: padThrottle, brake: padBrake, steer: +padSteer.toFixed(3) },
+      touch: { isTouch, uiBuilt: !!touchUI,
+               visible: !!touchUI && touchUI.style.display !== 'none',
+               assistThrottle: settings.assistThrottle,
+               down: touchUI && touchUI._handlers ? [...touchUI._handlers.active.values()] : [] },
+    };
+  }
+
   return {
-    state, settings, update, dispose, isTouch,
-    setTouchVisible, setLayout, updateWheelVisual, requestTilt, setManualGears,
+    state, settings, update, dispose, isTouch, debug,
+    setTouchVisible, setLayout, updateWheelVisual, requestTilt, setManualGears, reset,
     setSensitivity: (v) => { settings.sensitivity = v; },
     setAssistThrottle: (v) => { settings.assistThrottle = v; },
     get touchElement() { return touchUI; },
