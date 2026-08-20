@@ -248,8 +248,9 @@ export function createAIDriver(car, track, opts = {}) {
 
     // Map the roadwheel angle back through the car's speed-sensitive steering
     // reduction so a command of 1.0 really means full available lock.
-    const sf = 1 / (1 + Math.pow(v / 42, 1.7) * c.cfg.steerSpeedFalloff);
-    const effMax = Math.max(0.05, c.cfg.maxSteer * (0.30 + 0.70 * sf));
+    // Use the car's own definition of usable lock so the AI and the physics
+    // never disagree about how much steering is actually available.
+    const effMax = c.usableSteer ? c.usableSteer(v) : Math.max(0.05, c.cfg.maxSteer * 0.6);
     let steer = delta / effMax;
 
     // Cross-track PD. Pure pursuit alone is pure feedforward: with a long

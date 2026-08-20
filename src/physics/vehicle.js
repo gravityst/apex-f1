@@ -197,6 +197,20 @@ export function createVehicle(opts = {}) {
   updateInertia();
 
   // ---- helpers ------------------------------------------------------------
+  /**
+   * Maximum useful roadwheel angle at a given speed: the kinematic angle for
+   * the tightest radius the grip allows, plus roughly the slip angle at peak.
+   * Shared with the AI so the two never disagree about available lock.
+   */
+  function usableSteer(v) {
+    // Fitted to measured peak-grip lock: 10 deg at 22 m/s, 6 deg at 33-50,
+    // 4 deg at 69. Beyond the peak the fronts simply scrub — at 250 km/h,
+    // 20 deg of lock pulls 2.46 g against 3.49 g at 4 deg. A little headroom is
+    // left above the peak so the car can still be rotated deliberately.
+    const usable = (3.40 / Math.max(6, v) + 0.021) * 1.20;
+    return Math.min(cfg.maxSteer, Math.max(0.07, usable));
+  }
+
   function refreshBasis() {
     car.right.set(1, 0, 0).applyQuaternion(car.quaternion);
     car.up.set(0, 1, 0).applyQuaternion(car.quaternion);
@@ -279,10 +293,11 @@ export function createVehicle(opts = {}) {
     // ---------- steering ----------
     const speed = car.velocity.length();
     car.speed = speed;
-    const speedFactor = 1 / (1 + Math.pow(speed / 42, 1.7) * cfg.steerSpeedFalloff);
-    // Keep a healthy floor of steering authority at speed. The old 0.30 floor
-    // left barely 11 deg of lock at 250 km/h, which feels numb and unresponsive.
-    const targetSteer = car.input.steer * cfg.maxSteer * (0.46 + 0.54 * speedFactor);
+    // The most steering the front tyres can actually USE. Allowing more does not
+    // turn the car harder — it saturates the fronts and washes them wide, which
+    // reads as the car sliding around instead of steering. Measured: at 120 km/h
+    // half lock pulled 3.50 g while full lock pulled only 2.91 g.
+    const targetSteer = car.input.steer * (car.usableSteerOverride || usableSteer(speed));
     // finite steering rate — you cannot snap the wheel instantly
     const rate = 8.5 + 6.0 * (1 - Math.min(1, speed / 60));
     car.steerAngle += THREE.MathUtils.clamp(targetSteer - car.steerAngle, -rate * dt, rate * dt);
@@ -861,6 +876,6 @@ export function createVehicle(opts = {}) {
     }
   }
 
-  Object.assign(car, { reset, step, shift, autoGear, impact, setTyre, refreshBasis, engineTorque, updateInertia });
+  Object.assign(car, { reset, step, shift, autoGear, impact, setTyre, refreshBasis, engineTorque, updateInertia, usableSteer });
   return car;
 }
