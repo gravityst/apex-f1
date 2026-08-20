@@ -201,6 +201,14 @@
     left: calc(23% + 64px + env(safe-area-inset-left)) !important; right: auto !important;
     width: 58px; height: 32px;
   }
+  /* REV is only used at a standstill, so it lives by the left thumb rather
+     than competing for the crowded top band. */
+  body.apex-touch-on .apex-touch .tc-aux [data-zone="reverse"] {
+    position: fixed !important;
+    left: calc(90px + env(safe-area-inset-left)); right: auto !important;
+    bottom: calc(10px + env(safe-area-inset-bottom)); top: auto;
+    width: 64px; height: 38px;
+  }
   /* the FPS / quality readout sits underneath the pedals — not worth the space */
   body.apex-touch-on .hud-root .apx-status { display: none; }
 }

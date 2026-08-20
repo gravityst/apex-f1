@@ -21,6 +21,7 @@ const KEYMAP = {
   look: ['KeyB'],
   pit: ['KeyP'],
   reset: ['KeyR'],
+  reverse: ['KeyZ'],
   pause: ['Escape'],
 };
 
@@ -32,7 +33,7 @@ export function createControls(opts = {}) {
     throttle: 0, brake: 0, steer: 0,
     shiftUp: false, shiftDown: false,
     drs: false, ers: false, pit: false,
-    camera: false, look: 0, pause: false, reset: false,
+    camera: false, look: 0, pause: false, reset: false, reverse: false,
     source: 'keyboard',
     usingGamepad: false,
   };
@@ -94,6 +95,7 @@ export function createControls(opts = {}) {
         <div class="tc-mini" data-zone="ers"><span>ERS</span></div>
         <div class="tc-mini" data-zone="camera"><span>CAM</span></div>
         <div class="tc-mini" data-zone="pit"><span>PIT</span></div>
+        <div class="tc-mini" data-zone="reverse"><span>REV</span></div>
       </div>
       <div class="tc-shifts">
         <div class="tc-mini tc-shift" data-zone="shiftDown"><span>&minus;</span></div>
@@ -128,6 +130,7 @@ export function createControls(opts = {}) {
           if (name === 'shiftDown') pressed.add('__shiftDown');
           if (name === 'camera') pressed.add('__camera');
           if (name === 'pit') pressed.add('__pit');
+          if (name === 'reverse') pressed.add('__reverse');
         }
       }
       e.preventDefault();
@@ -271,6 +274,7 @@ export function createControls(opts = {}) {
     state.pause = anyPressed(KEYMAP.pause);
     state.reset = anyPressed(KEYMAP.reset);
     state.pit = anyPressed(KEYMAP.pit) || pressed.has('__pit');
+    state.reverse = anyPressed(KEYMAP.reverse) || pressed.has('__reverse');
     state.ers = anyHeld(KEYMAP.ers) || (touchUI && touchUI._isDown('ers'));
     state.drs = anyHeld(KEYMAP.drs) || state.drsHeld || (touchUI && touchUI._isDown('drs'));
     state.look = anyHeld(KEYMAP.look) ? 1 : 0;

@@ -85,8 +85,12 @@ The adjustment drifts slowly and is capped, so it never feels like rubber-bandin
 ## Controls
 
 **Keyboard** — `W`/`↑` throttle · `S`/`↓` brake · `A`/`D` or `←`/`→` steer ·
-`E`/`Q` shift up/down · `Space` DRS · `X` ERS · `C` camera · `B` look back ·
-`P` pit · `R` recover · `Esc` pause
+`Z` reverse · `E`/`Q` shift up/down · `Space` DRS · `X` ERS · `C` camera ·
+`B` look back · `P` pit · `R` recover · `Esc` pause
+
+`W` is always the throttle and `S` is always the brake, in every gear. Reverse
+is a gear you select with `Z` (or the REV button on touch); the pedals never
+swap meaning underneath you.
 
 **Gamepad** — triggers for throttle and brake, left stick to steer, shoulder
 buttons to shift.

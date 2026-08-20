@@ -864,38 +864,25 @@ function stepSimulation(dtRaw, input) {
     // The AI is NOT negated: it derives its steer from a target expressed in
     // the same body frame, so it is already self-consistent.
     p.input.steer = -input.steer;
-    // Reverse: hold the brake with the car stopped and it backs up, which is
-    // what everyone expects S / down-arrow to do once you are stationary.
-    if (racing && p.aids.autoGear) {
-      // Reverse needs a FRESH brake press while already stopped. Engaging it
-      // just because the brake was held through a stop means the pedals swap
-      // under the player mid-corner and the brake starts driving them
-      // backwards — which reads as the brake having stopped working entirely.
-      const stopped = p.speed < 0.9;
-      if (!stopped) { p._revArmed = false; p._revHold = 0; }
-      else if (input.brake <= 0.2) p._revArmed = true;   // released while stopped
-      if (p.gear >= 0 && stopped && p._revArmed && input.brake > 0.5) {
-        p._revHold = (p._revHold || 0) + dtRaw;
-        if (p._revHold > 0.25) {
-          p.gear = -1; p._revHold = 0; p._revArmed = false;
-          // Reverse swaps the pedals, so the player must be told it happened —
-          // otherwise the brake silently becomes the accelerator.
-          try { app.hud?.showMessage?.('REVERSE — BRAKE BACKS UP, THROTTLE TO GO FORWARD', 'warn', 2600); } catch {}
-        }
-      }
-      if (p.gear === -1 && (input.throttle > 0.3 || p.velocity.dot(p.forward) > 1.0)) {
-        p.gear = 1; p._revHold = 0;
-        try { app.hud?.showMessage?.('FORWARD', 'info', 1000); } catch {}
+    // W is ALWAYS the throttle and S is ALWAYS the brake. Reverse is a gear,
+    // selected with its own key (Z / the REV button) — swapping the pedals
+    // under the player was confusing and made the brake look broken.
+    if (racing && p.aids.autoGear && input.reverse) {
+      if (p.gear === -1) {
+        p.gear = 1;
+        try { app.hud?.showMessage?.('FORWARD', 'info', 1200); } catch {}
+      } else if (p.speed < 2.5) {
+        p.gear = -1;
+        try { app.hud?.showMessage?.('REVERSE', 'warn', 1600); } catch {}
+      } else {
+        try { app.hud?.showMessage?.('SLOW DOWN TO REVERSE', 'warn', 1200); } catch {}
       }
     }
-    if (p.gear === -1) {
-      // In reverse the pedals swap: brake backs you up, throttle stops you.
-      p.throttle = racing ? input.brake : 0;
-      p.brake = racing ? input.throttle : 1;
-    } else {
-      p.throttle = racing ? input.throttle : 0;
-      p.brake = racing ? input.brake : 1;
-    }
+    // Leave reverse automatically once rolling forward again.
+    if (p.gear === -1 && p.velocity.dot(p.forward) > 2.0) p.gear = 1;
+
+    p.throttle = racing ? input.throttle : 0;
+    p.brake = racing ? input.brake : 1;
     p.input.throttle = p.throttle;
     p.input.brake = p.brake;
     p.input.drsRequest = input.drs;
