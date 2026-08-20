@@ -431,8 +431,25 @@ export function createRace(opts) {
         b.position.addScaledVector(_n, push);
         if (relV < 0) {
           _p.copy(a.position).addScaledVector(_n, HALF_W);
-          a.impact(_n.clone().multiplyScalar(1), -relV * 0.5, _p, true);
-          b.impact(_n.clone().multiplyScalar(-1), -relV * 0.5, _p, true);
+          // One shared impulse between the pair, with a low restitution — F1
+          // cars scrape and nudge, they do not bounce off each other. Having
+          // each car independently reflect its own velocity (what this used to
+          // do) creates energy and throws them both away from the contact.
+          const ma = a.mass, mb = b.mass;
+          const e = 0.10;
+          const j = Math.min(-(1 + e) * relV / (1 / ma + 1 / mb), 30000);
+          a.velocity.addScaledVector(_n, -j / ma);
+          b.velocity.addScaledVector(_n, j / mb);
+          // A bounded yaw disturbance, not a launch.
+          const spin = Math.min(j / 120000, 0.45);
+          const sideA = Math.sign(_r.dot(a.right)) || 1;
+          const sideB = Math.sign(_r.dot(b.right)) || 1;
+          a.angularVelocity.y -= spin * sideA;
+          b.angularVelocity.y += spin * sideB;
+          a.impact(_n, -relV, _p, true, false);
+          _n.multiplyScalar(-1);
+          b.impact(_n, -relV, _p, true, false);
+          _n.multiplyScalar(-1);
           const sev = Math.abs(relV);
           if (sev > 9 && (a.isPlayer || b.isPlayer)) race.log('CONTACT', 'warn');
           if (sev > 34) {

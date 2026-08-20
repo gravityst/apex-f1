@@ -47,7 +47,7 @@ export const CHASSIS = {
   wheelRadiusF: 0.360, wheelRadiusR: 0.372,
   wheelInertia: 1.35,
   // brakes
-  brakeTorqueMax: 21000,     // Nm total
+  brakeTorqueMax: 27000,     // Nm total
   brakeBias: 0.575,
   // steering
   maxSteer: 0.370,           // rad at the roadwheel (~21.2 deg)
@@ -181,7 +181,7 @@ export function createVehicle(opts = {}) {
     aeroScale: 1,
     airborne: false, bottomedOut: 0, kerbRumble: 0,
     slipstream: 0, dirtyAir: 0,
-    aids: { tc: 0.45, abs: 0.55, autoGear: true, stability: 0.45 },
+    aids: { tc: 0.45, abs: 0.30, autoGear: true, stability: 0.45 },
     lastImpact: 0, impactCooldown: 0,
     inPit: false, pitState: 'none', pitTimer: 0,
     _hintS: 0,
@@ -852,8 +852,14 @@ export function createVehicle(opts = {}) {
     else if (car.gear > 1 && rpmFor(car.gear - 1) < cfg.shiftRpm * 0.86) shift(-1);
   }
 
-  /** Register a collision impulse (from race.js). */
-  function impact(normal, relSpeed, point, isCar) {
+  /**
+   * Register a collision.
+   * @param applyVelocity  false when the caller has already applied a proper
+   *   shared impulse (car-to-car). Letting both cars each reflect their own
+   *   velocity independently is not a collision — it manufactures energy and
+   *   flings them apart.
+   */
+  function impact(normal, relSpeed, point, isCar, applyVelocity = true) {
     const strength = THREE.MathUtils.clamp(relSpeed / 34, 0, 1);
     if (car.impactCooldown <= 0 && strength > 0.05) {
       car.lastImpact = strength;
@@ -864,6 +870,7 @@ export function createVehicle(opts = {}) {
       else car.damage.floor = Math.min(1, car.damage.floor + strength * (isCar ? 0.12 : 0.30));
       car.damage.total = (car.damage.frontWing + car.damage.rearWing + car.damage.floor) / 3;
     }
+    if (!applyVelocity) return;
     // velocity response
     const vn = car.velocity.dot(normal);
     if (vn < 0) {
@@ -873,8 +880,10 @@ export function createVehicle(opts = {}) {
       if (!isCar) car.velocity.multiplyScalar(1 - Math.min(0.42, strength * 0.60));
       car.angularVelocity.multiplyScalar(0.72);
       _b.subVectors(point, car.position);
-      _c.crossVectors(_b, _a.copy(normal).multiplyScalar(-vn * car.mass * 0.16));
-      car.angularVelocity.addScaledVector(_c, 1 / car.Iyaw);
+      _c.crossVectors(_b, _a.copy(normal).multiplyScalar(-vn * car.mass * 0.05));
+      _c.multiplyScalar(1 / car.Iyaw);
+      if (_c.lengthSq() > 0.36) _c.setLength(0.6);   // never spin from one hit
+      car.angularVelocity.add(_c);
     }
   }
 

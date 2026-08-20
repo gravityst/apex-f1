@@ -28,7 +28,7 @@ const settings = Object.assign({
   particles: 1, fov: 0, motionBlur: true,
   masterVolume: 0.8, engineVolume: 0.8, uiVolume: 0.7,
   units: 'kmh', camera: 'chase',
-  tc: 0.45, abs: 0.55, autoGear: true, stability: 0.45, racingLineAid: 'full',
+  tc: 0.45, abs: 0.30, autoGear: true, stability: 0.45, racingLineAid: 'full',
   touchLayout: 'drag', steerSensitivity: 1, assistThrottle: false,
 }, loadSettings());
 
@@ -74,7 +74,7 @@ const app = {
 };
 // Build stamp — so a stale copy is obvious at a glance instead of being
 // mistaken for a bug. Shown on the title screen and readable as __APEX.build.
-app.build = '0820-1717';
+app.build = '0820-1835';
 window.__APEX = app;
 // Exposed for debugging and automated smoke tests.
 app.startRace = (cfg) => startRace(cfg);
@@ -145,6 +145,7 @@ async function boot() {
     try { app.audio = mod.audio.createAudio({}); } catch (err) { console.warn('[apex] audio failed', err); }
   }
 
+  try { app.diag = createDiagnostics(); } catch {}
   app.ready = true;
   try {
     const el = document.querySelector('.apx-build, #apex-build') || (() => {
@@ -932,6 +933,55 @@ function buildRacingGuide(scene, track) {
   };
 }
 
+/**
+ * Diagnostic overlay (press D... no — press the backtick key `).
+ * Shows exactly what the car is being told to do, so a report can be evidence
+ * instead of guesswork: which input source is live, what gear is selected,
+ * what the pedals are actually doing, and whether the frame rate is low enough
+ * for the simulation to be falling behind real time.
+ */
+function createDiagnostics() {
+  const el = document.createElement('div');
+  el.id = 'apex-diag';
+  el.style.cssText = 'position:fixed;left:8px;top:8px;z-index:400;display:none;'
+    + 'font:600 11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;'
+    + 'background:rgba(4,7,12,.86);color:#dfe9f5;padding:10px 12px;border-radius:8px;'
+    + 'border:1px solid rgba(255,255,255,.14);white-space:pre;pointer-events:none;'
+    + 'max-width:52vw';
+  document.body.appendChild(el);
+  let on = false;
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Backquote') { on = !on; el.style.display = on ? '' : 'none'; }
+  });
+  return {
+    update() {
+      if (!on) return;
+      const p = app.player;
+      const d = app.controls ? app.controls.debug() : null;
+      if (!p || !d) { el.textContent = 'build ' + app.build + '\nno car yet'; return; }
+      const tang = app.track ? app.track.sample(p.lapDistance).tangent : null;
+      const facing = tang ? p.forward.dot(tang) : 0;
+      const along = p.velocity.dot(p.forward);
+      const gearTxt = p.gear < 0 ? 'R (REVERSE)' : p.gear === 0 ? 'N' : String(p.gear);
+      const slow = app.fps < 40;
+      el.textContent =
+        `build ${app.build}      \` to hide\n` +
+        `fps      ${app.fps.toFixed(0)}${slow ? '   <-- LOW, sim may lag' : ''}\n` +
+        `state    ${app.race ? app.race.state : '-'}   lights ${app.race ? app.race.lights : '-'}\n` +
+        `GEAR     ${gearTxt}\n` +
+        `speed    ${(p.speed * 3.6).toFixed(0)} km/h   along-track ${along.toFixed(1)} m/s ${along < -0.5 ? '(MOVING BACKWARDS)' : ''}\n` +
+        `facing   ${facing.toFixed(2)} ${facing < 0 ? '(POINTING BACKWARDS)' : ''}\n` +
+        `input    thr ${d.resolved.throttle.toFixed(2)}  brk ${d.resolved.brake.toFixed(2)}  steer ${d.resolved.steer.toFixed(2)}\n` +
+        `car      thr ${p.throttle.toFixed(2)}  brk ${p.brake.toFixed(2)}\n` +
+        `keys     ${d.keyboard.held.join(',') || '(none)'}\n` +
+        `gamepad  ${d.gamepad.connected.length ? d.gamepad.connected.join(',') + '  thr ' + d.gamepad.throttle.toFixed(2) : '(none)'}\n` +
+        `touch    isTouch ${d.touch.isTouch}  visible ${d.touch.visible}  assist ${d.touch.assistThrottle}\n` +
+        `absCut   ${p.wheels.map((w) => (w.absCut || 0).toFixed(2)).join(' ')}\n` +
+        `decel    ${(-p.gForce.lon).toFixed(2)} g`;
+    },
+  };
+}
+
 // ---------------------------------------------------------------- fallbacks
 function buildFallbackWorld(scene) {
   const t = app.track;
@@ -1130,7 +1180,10 @@ function stepSimulation(dtRaw, input) {
   // ---- fixed-step physics ----
   app.accumulator += dtRaw;
   let steps = 0;
-  while (app.accumulator >= PHYS_DT && steps < 6) {
+  // At a low frame rate six 120 Hz steps cover only 50 ms of a longer frame, so
+  // the simulation silently runs in slow motion — which makes everything,
+  // braking included, feel unresponsive. Allow enough steps to keep real time.
+  while (app.accumulator >= PHYS_DT && steps < 14) {
     for (const car of app.cars) {
       if (car.retired) { car.throttle = 0; car.brake = 1; }
       car.step(PHYS_DT, world);
@@ -1138,7 +1191,7 @@ function stepSimulation(dtRaw, input) {
     app.accumulator -= PHYS_DT;
     steps++;
   }
-  if (steps === 6) app.accumulator = 0;   // don't spiral on a slow frame
+  if (steps === 14) app.accumulator = 0;   // don't spiral on a very slow frame
 
   try { race.update(dtRaw); } catch (err) { console.warn('[apex] race director', err); }
 
@@ -1265,6 +1318,8 @@ function updateVisuals(dt) {
       try { app.hud?.showMessage?.('WRONG WAY', 'warn', 1100); } catch {}
     }
   } else app._wrongWayMsg = 0;
+
+  try { app.diag?.update(); } catch {}
 
   // audio + hud
   try {
