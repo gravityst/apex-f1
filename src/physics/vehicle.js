@@ -641,15 +641,17 @@ export function createVehicle(opts = {}) {
       // brake torque opposes rotation and must not spin the wheel backwards
       const omegaAfter = w.omega + (net / cfg.wheelInertia) * dt;
       let bt = brakeCap;
-      if (car.aids.abs > 0 && w.contact) {
-        // Slip-target servo: hold the wheel just on the peak of the Fx curve
-        // (~-0.12 slip) instead of cycling between locked and free.
-        const target = -(0.09 + 0.06 * (1 - car.aids.abs));
-        const err = target - sr;                  // >0 means we are past the peak
-        w.absCut = THREE.MathUtils.clamp(
-          w.absCut + err * dt * (34 + car.aids.abs * 40) - (err < 0 ? dt * 2.2 : 0),
-          0, 0.96,
-        );
+      if (car.aids.abs > 0 && w.contact && Math.abs(vLong) > 3) {
+        // Proportional slip servo. The previous integrating version wound up to
+        // its 0.96 ceiling within three frames of the brake being touched and
+        // then bled off at 0.018/frame, so the first moment of braking produced
+        // about 1 g instead of 4.6 g — the pedal felt dead. This responds
+        // symmetrically and never removes more than 80% of the torque, so hard
+        // braking stays hard while the wheel is kept near peak slip.
+        const target = -(0.10 + 0.05 * (1 - car.aids.abs));
+        const over = target - sr;                       // >0 once past the peak
+        const want = THREE.MathUtils.clamp(over * 16.0, 0, 0.95);
+        w.absCut += (want - w.absCut) * Math.min(1, dt * 45);
         bt *= (1 - w.absCut);
         w.absActive = w.absCut > 0.05;
       } else { w.absCut = 0; w.absActive = false; }
