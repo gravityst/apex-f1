@@ -60,14 +60,24 @@ export function createControls(opts = {}) {
     && (matchMedia('(any-pointer: coarse)').matches || navigator.maxTouchPoints > 1);
 
   // ---- keyboard -----------------------------------------------------------
+  const MODIFIERS = ['MetaLeft', 'MetaRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight'];
   const onKeyDown = (e) => {
     if (e.repeat) return;
     if (e.target && /input|textarea|select/i.test(e.target.tagName)) return;
+    // A browser/OS shortcut is being used (Cmd+Shift+4 and friends). macOS stops
+    // delivering keyup while Cmd is down, so everything pressed during the combo
+    // latches on forever. Drop the whole held set and ignore the keystroke.
+    if (e.metaKey || e.ctrlKey || e.altKey) { held.clear(); return; }
     held.add(e.code); pressed.add(e.code);
     state.source = 'keyboard';
     for (const list of Object.values(KEYMAP)) if (list.includes(e.code)) { e.preventDefault(); break; }
   };
-  const onKeyUp = (e) => held.delete(e.code);
+  const onKeyUp = (e) => {
+    held.delete(e.code);
+    // If a modifier comes up, anything held alongside it may never report a
+    // keyup at all — clear the lot rather than leave a key stuck down.
+    if (MODIFIERS.includes(e.code) || e.code === 'ShiftLeft' || e.code === 'ShiftRight') held.clear();
+  };
   const onBlur = () => { held.clear(); };
   window.addEventListener('keydown', onKeyDown, { passive: false });
   window.addEventListener('keyup', onKeyUp);

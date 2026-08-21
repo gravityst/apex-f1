@@ -74,7 +74,7 @@ const app = {
 };
 // Build stamp — so a stale copy is obvious at a glance instead of being
 // mistaken for a bug. Shown on the title screen and readable as __APEX.build.
-app.build = '0820-1835';
+app.build = '0820-1925';
 window.__APEX = app;
 // Exposed for debugging and automated smoke tests.
 app.startRace = (cfg) => startRace(cfg);
@@ -950,6 +950,9 @@ function createDiagnostics() {
     + 'max-width:52vw';
   document.body.appendChild(el);
   let on = false;
+  // Peak-hold, so a braking attempt is still readable a few seconds later when
+  // you take a screenshot — you cannot hold the brake and press Cmd+Shift+4.
+  const peak = { brk: 0, decel: 0, abs: 0, t: 0 };
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Backquote') { on = !on; el.style.display = on ? '' : 'none'; }
   });
@@ -964,6 +967,14 @@ function createDiagnostics() {
       const along = p.velocity.dot(p.forward);
       const gearTxt = p.gear < 0 ? 'R (REVERSE)' : p.gear === 0 ? 'N' : String(p.gear);
       const slow = app.fps < 40;
+      // hold peaks for ~6 s
+      const now = performance.now();
+      if (now - peak.t > 6000) { peak.brk = 0; peak.decel = 0; peak.abs = 0; peak.t = now; }
+      if (d.resolved.brake > peak.brk) { peak.brk = d.resolved.brake; peak.t = now; }
+      const dec = -p.gForce.lon;
+      if (dec > peak.decel) { peak.decel = dec; peak.t = now; }
+      const ac = Math.max(...p.wheels.map((w) => w.absCut || 0));
+      if (ac > peak.abs) peak.abs = ac;
       el.textContent =
         `build ${app.build}      \` to hide\n` +
         `fps      ${app.fps.toFixed(0)}${slow ? '   <-- LOW, sim may lag' : ''}\n` +
@@ -977,7 +988,11 @@ function createDiagnostics() {
         `gamepad  ${d.gamepad.connected.length ? d.gamepad.connected.join(',') + '  thr ' + d.gamepad.throttle.toFixed(2) : '(none)'}\n` +
         `touch    isTouch ${d.touch.isTouch}  visible ${d.touch.visible}  assist ${d.touch.assistThrottle}\n` +
         `absCut   ${p.wheels.map((w) => (w.absCut || 0).toFixed(2)).join(' ')}\n` +
-        `decel    ${(-p.gForce.lon).toFixed(2)} g`;
+        `decel    ${(-p.gForce.lon).toFixed(2)} g\n` +
+        `-- last 6 s --------------------\n` +
+        `brake held   ${peak.brk.toFixed(2)}   ${peak.brk < 0.5 ? '<-- BRAKE NEVER REGISTERED' : ''}\n` +
+        `peak decel   ${peak.decel.toFixed(2)} g\n` +
+        `peak absCut  ${peak.abs.toFixed(2)}`;
     },
   };
 }

@@ -604,7 +604,11 @@ export function createVehicle(opts = {}) {
         }
         w.mu = mu;
 
-        const D = mu * w.load;
+        // Deliberate tuning choice: braking grip is boosted over the strict
+        // tyre model. The realistic figure is correct but reads as weak and
+        // unsatisfying to drive, and stopping the car is the single thing a
+        // player judges the handling by. Cornering grip is untouched.
+        const D = mu * w.load * (sr < -0.02 ? 1.34 : 1.0);
         const Fx0 = magic(sr, PJ.Bx, PJ.Cx, PJ.Ex, D);
         const Fy0 = magic(sa2, PJ.By, PJ.Cy, PJ.Ey, D);
 
