@@ -29,6 +29,7 @@ const settings = Object.assign({
   masterVolume: 0.8, engineVolume: 0.8, uiVolume: 0.7,
   units: 'kmh', camera: 'chase',
   tc: 0.45, abs: 0.30, autoGear: true, stability: 0.45, racingLineAid: 'full',
+  steerAssist: 0.75,
   touchLayout: 'drag', steerSensitivity: 1, assistThrottle: false,
 }, loadSettings());
 
@@ -74,7 +75,7 @@ const app = {
 };
 // Build stamp — so a stale copy is obvious at a glance instead of being
 // mistaken for a bug. Shown on the title screen and readable as __APEX.build.
-app.build = '0820-1925';
+app.build = '0820-1941';
 window.__APEX = app;
 // Exposed for debugging and automated smoke tests.
 app.startRace = (cfg) => startRace(cfg);
@@ -300,6 +301,7 @@ function applySetting(key, value) {
     case 'fov': app.engine.rig.fovBase = 62 + value; break;
     case 'touchLayout': app.controls?.setLayout?.(value); break;
     case 'steerSensitivity': app.controls?.setSensitivity?.(value); break;
+    case 'steerAssist': break;   // read directly from settings each frame
     case 'assistThrottle': app.controls?.setAssistThrottle?.(value); break;
     case 'autoGear':
       if (app.player) app.player.aids.autoGear = value;
@@ -1129,7 +1131,35 @@ function stepSimulation(dtRaw, input) {
     // player's right is the car's right.
     // The AI is NOT negated: it derives its steer from a target expressed in
     // the same body frame, so it is already self-consistent.
-    p.input.steer = -input.steer;
+    // --- steering assist -------------------------------------------------
+    // Predictive, not reactive. Reacting to the car already being past the
+    // white line is useless: at 250 km/h its tightest possible radius is about
+    // 178 m, so once it is running wide no steering input can retrieve it.
+    // This looks ahead at where the car WILL be and starts correcting while
+    // there is still road left. Player aid only — the AI never sees it.
+    let steerCmd = input.steer;
+    if (racing && settings.steerAssist > 0 && app.track) {
+      const halfW = app.track.sample(p.lapDistance).width;
+      const latVel = (p.lateral - (p._assistPrevLat ?? p.lateral)) / Math.max(1e-3, dtRaw);
+      p._assistPrevLat = p.lateral;
+      const predicted = p.lateral + latVel * 0.85;      // where we end up shortly
+      const margin = halfW - 1.6;
+      const over = Math.max(Math.abs(p.lateral) - margin, Math.abs(predicted) - margin);
+      if (over > 0) {
+        const strength = Math.min(1, over / 2.5) * settings.steerAssist;
+        // NOTE the sign: track.lateral points along UP x tangent, which for a
+        // car facing +Z is screen-LEFT, not right. Verified by measurement —
+        // with the naive sign the assist pushed the same way as the input and
+        // did precisely nothing.
+        const side = -(Math.sign(p.lateral || predicted) || 1);
+        // fade out the outward component and add a firm correction inward
+        const outward = Math.max(0, steerCmd * side);   // >0 = steering further out
+        steerCmd -= outward * strength * 1.15;
+        steerCmd -= side * strength * 0.55;
+        steerCmd = THREE.MathUtils.clamp(steerCmd, -1, 1);
+      }
+    }
+    p.input.steer = -steerCmd;
     // W is ALWAYS the throttle and S is ALWAYS the brake. Reverse is a gear,
     // selected with its own key (Z / the REV button) — swapping the pedals
     // under the player was confusing and made the brake look broken.

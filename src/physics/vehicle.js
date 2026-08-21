@@ -95,7 +95,7 @@ const PJ = {
   // the rear axle also carries the greater share of the load.
   Fz0Front: 2150,
   Fz0Rear: 2980,
-  muBase: 1.90,
+  muBase: 2.25,
 };
 function magic(x, B, C, E, D) {
   const Bx = B * x;
